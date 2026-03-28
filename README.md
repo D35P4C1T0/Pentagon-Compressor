@@ -1,5 +1,9 @@
 # Pentagon
 
+<img width="1257" height="881" alt="image" src="https://github.com/user-attachments/assets/a259db19-bac5-4feb-a12c-5faec4e2e44a" />
+
+---
+
 `Pentagon` is a JUCE-based VST3 dynamics plugin implementing the five-stage serial compressor described in [`reference/specs.md`](/home/matteo/Documents/prog/vst/5dita_2/reference/specs.md) and [`reference/specs_long.md`](/home/matteo/Documents/prog/vst/5dita_2/reference/specs_long.md).
 
 Implemented features:
