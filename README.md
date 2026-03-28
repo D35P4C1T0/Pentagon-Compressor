@@ -57,6 +57,24 @@ Main binary inside the bundle:
 build/Pentagon_artefacts/VST3/Pentagon.vst3/Contents/x86_64-linux/Pentagon.so
 ```
 
+## Releases
+
+GitHub Actions builds and publishes the Linux VST3 bundle when a tag matching `v*` is pushed.
+
+Example:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+That workflow:
+
+- installs the Linux JUCE build dependencies
+- builds the `Pentagon` VST3 target
+- zips the `Pentagon.vst3` bundle
+- attaches the zip to the GitHub release for that tag
+
 ## Highlights
 
 - `FET76` exposes the classic `1176` ratios: `4:1`, `8:1`, `12:1`, `20:1`
