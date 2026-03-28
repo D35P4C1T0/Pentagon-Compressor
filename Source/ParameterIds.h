@@ -130,6 +130,7 @@ namespace IDs
 
     inline constexpr auto dryWet = "global.dryWet";
     inline constexpr auto outputGainDb = "global.outputGainDb";
+    inline constexpr auto autoGainEnabled = "global.autoGainEnabled";
     inline constexpr auto safetyEnabled = "global.safetyEnabled";
     inline constexpr auto oversampling = "global.oversampling";
     inline constexpr auto tweakMode = "global.tweakMode";

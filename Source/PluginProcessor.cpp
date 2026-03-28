@@ -25,6 +25,30 @@ std::unique_ptr<juce::RangedAudioParameter> makeParameter(Args&&... args)
 {
     return std::make_unique<ParameterType>(std::forward<Args>(args)...);
 }
+
+float computeBufferRms(const juce::AudioBuffer<float>& buffer) noexcept
+{
+    double sumSquares = 0.0;
+    int sampleCount = 0;
+
+    for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+    {
+        const auto* samples = buffer.getReadPointer(channel);
+
+        for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+        {
+            const auto value = static_cast<double> (samples[sample]);
+            sumSquares += value * value;
+        }
+
+        sampleCount += buffer.getNumSamples();
+    }
+
+    if (sampleCount == 0)
+        return 0.0f;
+
+    return static_cast<float> (std::sqrt(sumSquares / static_cast<double> (sampleCount)));
+}
 } // namespace
 
 PentagonAudioProcessor::PentagonAudioProcessor()
@@ -36,6 +60,7 @@ PentagonAudioProcessor::PentagonAudioProcessor()
 {
     dryWetParam = parameters.getRawParameterValue(IDs::dryWet);
     outputGainParam = parameters.getRawParameterValue(IDs::outputGainDb);
+    autoGainEnabledParam = parameters.getRawParameterValue(IDs::autoGainEnabled);
     safetyEnabledParam = parameters.getRawParameterValue(IDs::safetyEnabled);
     oversamplingParam = parameters.getRawParameterValue(IDs::oversampling);
     tweakModeParam = parameters.getRawParameterValue(IDs::tweakMode);
@@ -54,10 +79,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout PentagonAudioProcessor::crea
 
     // One flat APVTS layout keeps automation/state handling simple across all five stages.
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
-    params.reserve(48);
+    params.reserve(49);
 
     params.push_back(makeParameter<Float>(IDs::dryWet, "Dry/Wet", juce::NormalisableRange<float>(0.0f, 1.0f), 0.71f));
     params.push_back(makeParameter<Float>(IDs::outputGainDb, "Output", juce::NormalisableRange<float>(-24.0f, 24.0f, 0.01f), 0.0f));
+    params.push_back(makeParameter<Bool>(IDs::autoGainEnabled, "Auto Gain", false));
     params.push_back(makeParameter<Bool>(IDs::safetyEnabled, "Safety", true));
     params.push_back(makeParameter<Choice>(IDs::oversampling, "Oversampling", juce::StringArray { "1x", "2x", "4x" }, 0));
     params.push_back(makeParameter<Choice>(IDs::tweakMode, "Tweak", juce::StringArray { "Clean", "Balanced", "Aggressive", "Glue", "Vocal", "Loud" }, 2));
@@ -179,10 +205,12 @@ void PentagonAudioProcessor::prepareToPlay(const double sampleRate, const int sa
 
     dryWetSmoother.reset(sampleRate, 0.02);
     outputGainDbSmoother.reset(sampleRate, 0.02);
+    autoGainDbSmoother.reset(sampleRate, 0.25);
     safetyMixSmoother.reset(sampleRate, 0.012);
 
     dryWetSmoother.setCurrentAndTargetValue(dryWetParam->load());
     outputGainDbSmoother.setCurrentAndTargetValue(outputGainParam->load());
+    autoGainDbSmoother.setCurrentAndTargetValue(0.0f);
     safetyMixSmoother.setCurrentAndTargetValue(safetyEnabledParam->load() > 0.5f ? 1.0f : 0.0f);
 
     dryBuffer.setSize(maximumChannels, maximumBlockSize, false, false, true);
@@ -292,24 +320,45 @@ float PentagonAudioProcessor::applySafety(const float sample) const noexcept
     return std::tanh(sample / ceiling) * ceiling;
 }
 
-void PentagonAudioProcessor::mixDryWetAndFinish(juce::AudioBuffer<float>& wetBuffer, const juce::AudioBuffer<float>& delayedDryBuffer)
+void PentagonAudioProcessor::mixDryWetAndFinish(juce::AudioBuffer<float>& wetBuffer,
+                                                const juce::AudioBuffer<float>& delayedDryBuffer,
+                                                const float inputRms)
 {
     dryWetSmoother.setTargetValue(dryWetParam->load());
     outputGainDbSmoother.setTargetValue(outputGainParam->load());
+    autoGainDbSmoother.setTargetValue(0.0f);
     safetyMixSmoother.setTargetValue(safetyEnabledParam->load() > 0.5f ? 1.0f : 0.0f);
 
     for (int sample = 0; sample < wetBuffer.getNumSamples(); ++sample)
     {
         const auto wetMix = dryWetSmoother.getNextValue();
-        const auto outputGain = dbToGain(outputGainDbSmoother.getNextValue());
-        const auto safetyMix = safetyMixSmoother.getNextValue();
 
         for (int channel = 0; channel < wetBuffer.getNumChannels(); ++channel)
         {
             const auto dry = delayedDryBuffer.getSample(channel, sample);
             const auto wet = wetBuffer.getSample(channel, sample);
             auto mixed = dry + (wetMix * (wet - dry));
-            mixed *= outputGain;
+            wetBuffer.setSample(channel, sample, mixed);
+        }
+    }
+
+    // Auto gain compares the incoming program level to the post-chain signal, while the OUTPUT trim remains manual.
+    if (autoGainEnabledParam->load() > 0.5f)
+    {
+        const auto outputRms = computeBufferRms(wetBuffer);
+        const auto targetCompensationDb = juce::jlimit(-18.0f, 18.0f, gainToDb(inputRms) - gainToDb(outputRms));
+        autoGainDbSmoother.setTargetValue(targetCompensationDb);
+    }
+
+    for (int sample = 0; sample < wetBuffer.getNumSamples(); ++sample)
+    {
+        const auto autoGain = dbToGain(autoGainDbSmoother.getNextValue());
+        const auto outputGain = dbToGain(outputGainDbSmoother.getNextValue());
+        const auto safetyMix = safetyMixSmoother.getNextValue();
+
+        for (int channel = 0; channel < wetBuffer.getNumChannels(); ++channel)
+        {
+            auto mixed = wetBuffer.getSample(channel, sample) * autoGain * outputGain;
             const auto safe = applySafety(mixed);
             mixed += safetyMix * (safe - mixed);
             wetBuffer.setSample(channel, sample, mixed);
@@ -362,6 +411,8 @@ void PentagonAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
         inputPeak = juce::jmax(inputPeak, buffer.getMagnitude(channel, 0, buffer.getNumSamples()));
     }
 
+    const auto inputRms = computeBufferRms(dryBuffer);
+
     updateLatencyForCurrentOversampling();
 
     const auto orderPacked = packedChainOrder.load(std::memory_order_acquire);
@@ -389,7 +440,7 @@ void PentagonAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
     }
 
     updateDryLatencyCompensation(dryBuffer);
-    mixDryWetAndFinish(buffer, dryBuffer);
+    mixDryWetAndFinish(buffer, dryBuffer, inputRms);
     publishMeters(inputPeak, buffer);
 }
 
@@ -504,6 +555,7 @@ void PentagonAudioProcessor::applyFactoryPreset(const int index)
     setParameterPlainValue(IDs::vcaEnabled, 0.0f);
     setParameterPlainValue(IDs::variEnabled, 0.0f);
     setParameterPlainValue(IDs::tubeEnabled, 0.0f);
+    setParameterPlainValue(IDs::autoGainEnabled, 0.0f);
     setParameterPlainValue(IDs::fetRatio, 0.0f);
     setParameterPlainValue(IDs::fetSaturationMix, 100.0f);
     setParameterPlainValue(IDs::optoSaturationMix, 100.0f);

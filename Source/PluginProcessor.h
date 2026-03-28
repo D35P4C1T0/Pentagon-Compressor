@@ -67,7 +67,9 @@ private:
     int getCurrentLatencySamples() const noexcept;
 
     void updateDryLatencyCompensation(juce::AudioBuffer<float>& dryBuffer);
-    void mixDryWetAndFinish(juce::AudioBuffer<float>& wetBuffer, const juce::AudioBuffer<float>& dryBuffer);
+    void mixDryWetAndFinish(juce::AudioBuffer<float>& wetBuffer,
+                            const juce::AudioBuffer<float>& dryBuffer,
+                            float inputRms);
     void publishMeters(float inputPeak, const juce::AudioBuffer<float>& outputBuffer);
     void syncStateProperties();
     void setPackedChainOrderInternal(uint32_t packedOrder, bool updateValueTree);
@@ -85,12 +87,14 @@ private:
 
     std::atomic<float>* dryWetParam {};
     std::atomic<float>* outputGainParam {};
+    std::atomic<float>* autoGainEnabledParam {};
     std::atomic<float>* safetyEnabledParam {};
     std::atomic<float>* oversamplingParam {};
     std::atomic<float>* tweakModeParam {};
 
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> dryWetSmoother;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> outputGainDbSmoother;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> autoGainDbSmoother;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> safetyMixSmoother;
 
     std::unique_ptr<juce::dsp::Oversampling<float>> oversampling2x;

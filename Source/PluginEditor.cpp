@@ -78,11 +78,28 @@ public:
 
         g.setColour(RetroPalette::meterBg());
         g.fillRect(meterArea);
+        g.setColour(RetroPalette::border().withAlpha(0.12f));
+        g.drawRect(meterArea, 1);
 
-        auto filled = meterArea;
-        filled.removeFromLeft(static_cast<int>(std::round(meterArea.getWidth() * level)));
+        const auto lineY = static_cast<float> (meterArea.getCentreY());
+        const auto lineStartX = static_cast<float> (meterArea.getX() + 4);
+        const auto lineEndX = static_cast<float> (meterArea.getRight() - 4);
+        const auto activeX = juce::jmap(level, 0.0f, 1.0f, lineStartX, lineEndX);
+
+        g.setColour(RetroPalette::border().withAlpha(0.2f));
+        g.drawLine(lineStartX, lineY, lineEndX, lineY, 2.0f);
+
+        g.setColour(RetroPalette::border().withAlpha(0.18f));
+
+        for (int tick = 1; tick < 8; ++tick)
+        {
+            const auto x = juce::jmap(static_cast<float> (tick), 0.0f, 8.0f, lineStartX, lineEndX);
+            g.drawVerticalLine(static_cast<int> (std::round(x)), meterArea.getY() + 4.0f, meterArea.getBottom() - 4.0f);
+        }
+
         g.setColour(RetroPalette::meter());
-        g.fillRect(meterArea.withWidth(static_cast<int>(std::round(meterArea.getWidth() * level))));
+        g.drawLine(lineStartX, lineY, activeX, lineY, 3.0f);
+        g.fillEllipse(activeX - 4.0f, lineY - 4.0f, 8.0f, 8.0f);
 
         g.setColour(RetroPalette::text());
         g.setFont(retroFont(13.0f, true));
@@ -200,6 +217,7 @@ public:
         : processor(processorToUse),
           dryWet(processor.getValueTreeState(), "DRY/WET", pentagon::IDs::dryWet),
           output(processor.getValueTreeState(), "OUTPUT", pentagon::IDs::outputGainDb),
+          autoGain(processor.getValueTreeState(), "AUTO GAIN", pentagon::IDs::autoGainEnabled),
           safety(processor.getValueTreeState(), "SAFETY", pentagon::IDs::safetyEnabled),
           oversampling(processor.getValueTreeState(), "OS", pentagon::IDs::oversampling),
           tweak(processor.getValueTreeState(), "TWEAK", pentagon::IDs::tweakMode),
@@ -208,6 +226,7 @@ public:
     {
         addAndMakeVisible(dryWet);
         addAndMakeVisible(output);
+        addAndMakeVisible(autoGain);
         addAndMakeVisible(safety);
         addAndMakeVisible(oversampling);
         addAndMakeVisible(tweak);
@@ -281,6 +300,8 @@ public:
         area.removeFromTop(4);
 
         auto secondControlRow = area.removeFromTop(30);
+        autoGain.setBounds(secondControlRow.removeFromLeft(140));
+        secondControlRow.removeFromLeft(8);
         safety.setBounds(secondControlRow.removeFromLeft(120));
         secondControlRow.removeFromLeft(8);
         oversampling.setBounds(secondControlRow.removeFromLeft(220));
@@ -292,6 +313,7 @@ private:
     PentagonAudioProcessor& processor;
     SliderRow dryWet;
     SliderRow output;
+    ToggleRow autoGain;
     ToggleRow safety;
     ChoiceRow oversampling;
     ChoiceRow tweak;
