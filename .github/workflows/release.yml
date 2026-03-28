@@ -15,7 +15,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Linux build dependencies
         run: |
@@ -48,9 +48,18 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          cp -R build/Pentagon_artefacts/VST3/Pentagon.vst3 dist/Pentagon.vst3
-          cd dist
-          zip -r "Pentagon-linux-${GITHUB_REF_NAME}.zip" Pentagon.vst3
+          plugin_bundle="$(find build -type d -name 'Pentagon.vst3' | head -n 1)"
+          if [ -z "$plugin_bundle" ]; then
+            echo "Pentagon.vst3 bundle was not found under build/"
+            find build -maxdepth 4 \( -type d -o -type f \) | sort
+            exit 1
+          fi
+          stage_dir="$(mktemp -d)"
+          cp -R "$plugin_bundle" "$stage_dir/Pentagon.vst3"
+          (
+            cd "$stage_dir"
+            zip -r "$GITHUB_WORKSPACE/dist/Pentagon-linux-${GITHUB_REF_NAME}.zip" Pentagon.vst3
+          )
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
