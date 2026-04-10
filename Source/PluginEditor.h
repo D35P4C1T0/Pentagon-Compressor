@@ -19,13 +19,22 @@ public:
 
 private:
     void timerCallback() override;
+    void setStageCollapsed(pentagon::StageType stage, bool collapsed);
+    bool isStageCollapsed(pentagon::StageType stage) const noexcept;
+    void beginStageDrag(pentagon::StageType stage);
+    void updateStageDrag(pentagon::StageType stage, juce::Point<int> topLeft);
+    void finishStageDrag(pentagon::StageType stage, juce::Point<int> dropPoint);
 
     class GlobalPanel;
     class StagePanel;
 
-    PentagonAudioProcessor& processor;
+    PentagonAudioProcessor& pluginProcessor;
     std::unique_ptr<GlobalPanel> globalPanel;
     std::array<std::unique_ptr<StagePanel>, pentagon::numStages> stagePanels;
+    std::array<bool, pentagon::numStages> collapsedStages {};
+    std::array<juce::Rectangle<int>, pentagon::numStages> stageSlotBounds;
+    pentagon::StageType draggingStage { pentagon::StageType::fet76 };
+    bool isDraggingStage {};
     uint32_t lastOrderPacked {};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PentagonAudioProcessorEditor)

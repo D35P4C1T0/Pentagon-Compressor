@@ -67,9 +67,107 @@ jobs:
           name: Pentagon-linux-${{ github.ref_name }}
           path: dist/Pentagon-linux-${{ github.ref_name }}.zip
 
-      - name: Publish tagged release asset
-        if: startsWith(github.ref, 'refs/tags/')
+  build-macos-vst3:
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Configure CMake
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build Pentagon VST3
+        shell: bash
+        run: |
+          jobs=$(( $(sysctl -n hw.ncpu) / 2 ))
+          if [ "$jobs" -lt 1 ]; then
+            jobs=1
+          fi
+          cmake --build build --config Release -j"$jobs"
+
+      - name: Package macOS VST3 bundle
+        shell: bash
+        run: |
+          mkdir -p dist
+          plugin_bundle="$(find build -type d -name 'Pentagon.vst3' | head -n 1)"
+          if [ -z "$plugin_bundle" ]; then
+            echo "Pentagon.vst3 bundle was not found under build/"
+            find build -maxdepth 5 \( -type d -o -type f \) | sort
+            exit 1
+          fi
+          stage_dir="$(mktemp -d)"
+          cp -R "$plugin_bundle" "$stage_dir/Pentagon.vst3"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$stage_dir/Pentagon.vst3" \
+            "$GITHUB_WORKSPACE/dist/Pentagon-macos-${GITHUB_REF_NAME}.zip"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pentagon-macos-${{ github.ref_name }}
+          path: dist/Pentagon-macos-${{ github.ref_name }}.zip
+
+  build-windows-vst3:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Configure CMake
+        run: cmake -S . -B build
+
+      - name: Build Pentagon VST3
+        shell: pwsh
+        run: |
+          $jobs = [Math]::Max([int]([Environment]::ProcessorCount / 2), 1)
+          cmake --build build --config Release --parallel $jobs
+
+      - name: Package Windows VST3 bundle
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $pluginBundle = Get-ChildItem -Path build -Recurse -Directory -Filter Pentagon.vst3 | Select-Object -First 1
+          if (-not $pluginBundle) {
+            Write-Host "Pentagon.vst3 bundle was not found under build/"
+            Get-ChildItem -Path build -Recurse | Select-Object FullName
+            exit 1
+          }
+
+          $stageDir = Join-Path $env:RUNNER_TEMP "pentagon-vst3"
+          if (Test-Path $stageDir) {
+            Remove-Item -Recurse -Force $stageDir
+          }
+          New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
+          Copy-Item -Recurse -Path $pluginBundle.FullName -Destination (Join-Path $stageDir "Pentagon.vst3")
+          Compress-Archive -Path (Join-Path $stageDir "Pentagon.vst3") -DestinationPath ("dist/Pentagon-windows-{0}.zip" -f $env:GITHUB_REF_NAME) -Force
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pentagon-windows-${{ github.ref_name }}
+          path: dist/Pentagon-windows-${{ github.ref_name }}.zip
+
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs:
+      - build-linux-vst3
+      - build-macos-vst3
+      - build-windows-vst3
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Publish tagged release assets
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: dist/Pentagon-linux-${{ github.ref_name }}.zip
+          files: |
+            dist/Pentagon-linux-${{ github.ref_name }}/Pentagon-linux-${{ github.ref_name }}.zip
+            dist/Pentagon-macos-${{ github.ref_name }}/Pentagon-macos-${{ github.ref_name }}.zip
+            dist/Pentagon-windows-${{ github.ref_name }}/Pentagon-windows-${{ github.ref_name }}.zip

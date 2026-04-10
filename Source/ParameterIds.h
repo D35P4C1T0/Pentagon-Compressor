@@ -42,6 +42,13 @@ enum class TweakMode : int
     loud
 };
 
+enum class StageAuditionMode : int
+{
+    off = 0,
+    solo,
+    delta
+};
+
 struct MacroTuning
 {
     float thresholdOffsetDb {};
@@ -130,6 +137,7 @@ namespace IDs
 
     inline constexpr auto dryWet = "global.dryWet";
     inline constexpr auto outputGainDb = "global.outputGainDb";
+    inline constexpr auto outputCeilingDb = "global.outputCeilingDb";
     inline constexpr auto autoGainEnabled = "global.autoGainEnabled";
     inline constexpr auto safetyEnabled = "global.safetyEnabled";
     inline constexpr auto oversampling = "global.oversampling";

@@ -5,6 +5,11 @@ namespace
 {
 using namespace pentagon;
 
+constexpr auto userPresetSlotsType = "UserPresetSlots";
+constexpr auto userPresetSlotType = "UserPresetSlot";
+constexpr auto userPresetSlotNameProperty = "name";
+constexpr auto userPresetSlotSnapshotProperty = "snapshot";
+
 juce::StringArray makeSaturationChoices(const std::initializer_list<const char*> names)
 {
     juce::StringArray result;
@@ -60,6 +65,7 @@ PentagonAudioProcessor::PentagonAudioProcessor()
 {
     dryWetParam = parameters.getRawParameterValue(IDs::dryWet);
     outputGainParam = parameters.getRawParameterValue(IDs::outputGainDb);
+    outputCeilingParam = parameters.getRawParameterValue(IDs::outputCeilingDb);
     autoGainEnabledParam = parameters.getRawParameterValue(IDs::autoGainEnabled);
     safetyEnabledParam = parameters.getRawParameterValue(IDs::safetyEnabled);
     oversamplingParam = parameters.getRawParameterValue(IDs::oversampling);
@@ -79,10 +85,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout PentagonAudioProcessor::crea
 
     // One flat APVTS layout keeps automation/state handling simple across all five stages.
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
-    params.reserve(49);
+    params.reserve(50);
 
     params.push_back(makeParameter<Float>(IDs::dryWet, "Dry/Wet", juce::NormalisableRange<float>(0.0f, 1.0f), 0.71f));
     params.push_back(makeParameter<Float>(IDs::outputGainDb, "Output", juce::NormalisableRange<float>(-24.0f, 24.0f, 0.01f), 0.0f));
+    params.push_back(makeParameter<Float>(IDs::outputCeilingDb, "Ceiling", juce::NormalisableRange<float>(-18.0f, 0.0f, 0.01f), -0.8f));
     params.push_back(makeParameter<Bool>(IDs::autoGainEnabled, "Auto Gain", false));
     params.push_back(makeParameter<Bool>(IDs::safetyEnabled, "Safety", true));
     params.push_back(makeParameter<Choice>(IDs::oversampling, "Oversampling", juce::StringArray { "1x", "2x", "4x" }, 0));
@@ -134,7 +141,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout PentagonAudioProcessor::crea
 
 const juce::String PentagonAudioProcessor::getName() const
 {
-    return JucePlugin_Name;
+    return "Pentagon";
 }
 
 bool PentagonAudioProcessor::acceptsMidi() const
@@ -164,7 +171,7 @@ int PentagonAudioProcessor::getNumPrograms()
 
 int PentagonAudioProcessor::getCurrentProgram()
 {
-    return getCurrentProgramIndex();
+    return juce::jmax(0, getCurrentProgramIndex());
 }
 
 void PentagonAudioProcessor::setCurrentProgram(const int index)
@@ -202,26 +209,39 @@ void PentagonAudioProcessor::prepareToPlay(const double sampleRate, const int sa
     currentSampleRate = sampleRate;
     maximumBlockSize = juce::jmax(1, samplesPerBlock);
     maximumChannels = juce::jlimit(1, 2, getTotalNumInputChannels());
+    activeOversamplingMode = static_cast<int> (OversamplingMode::x1);
+    pendingOversamplingMode = static_cast<int> (oversamplingParam->load());
 
     dryWetSmoother.reset(sampleRate, 0.02);
     outputGainDbSmoother.reset(sampleRate, 0.02);
+    outputCeilingDbSmoother.reset(sampleRate, 0.05);
     autoGainDbSmoother.reset(sampleRate, 0.25);
     safetyMixSmoother.reset(sampleRate, 0.012);
 
     dryWetSmoother.setCurrentAndTargetValue(dryWetParam->load());
     outputGainDbSmoother.setCurrentAndTargetValue(outputGainParam->load());
+    outputCeilingDbSmoother.setCurrentAndTargetValue(outputCeilingParam->load());
     autoGainDbSmoother.setCurrentAndTargetValue(0.0f);
     safetyMixSmoother.setCurrentAndTargetValue(safetyEnabledParam->load() > 0.5f ? 1.0f : 0.0f);
 
     dryBuffer.setSize(maximumChannels, maximumBlockSize, false, false, true);
     dryDelayRingBuffer.setSize(maximumChannels, maximumBlockSize + 2048, false, false, true);
+    limiterLookaheadRingBuffer.setSize(maximumChannels, maximumBlockSize + getLimiterLookaheadSamples() + 32, false, false, true);
     dryDelayRingBuffer.clear();
+    limiterLookaheadRingBuffer.clear();
     dryDelayWritePosition = 0;
+    limiterLookaheadWritePosition = 0;
+    limiterGainState = 1.0f;
+    autoGainInputLoudnessDb = -24.0f;
+    autoGainOutputLoudnessDb = -24.0f;
 
     prepareOversampling(maximumChannels, maximumBlockSize);
 
     stageChain.prepare({ sampleRate, samplesPerBlock, maximumChannels });
     stageChain.reset();
+
+    if (pendingOversamplingMode != activeOversamplingMode)
+        applyPendingOversamplingMode();
 
     updateLatencyForCurrentOversampling();
 }
@@ -241,7 +261,7 @@ bool PentagonAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) 
     return input == juce::AudioChannelSet::mono() || input == juce::AudioChannelSet::stereo();
 }
 
-int PentagonAudioProcessor::getCurrentOversamplingFactor() const noexcept
+int PentagonAudioProcessor::getRequestedOversamplingFactor() const noexcept
 {
     switch (static_cast<OversamplingMode> (static_cast<int> (oversamplingParam->load())))
     {
@@ -252,9 +272,20 @@ int PentagonAudioProcessor::getCurrentOversamplingFactor() const noexcept
     }
 }
 
+int PentagonAudioProcessor::getActiveOversamplingFactor() const noexcept
+{
+    switch (static_cast<OversamplingMode> (activeOversamplingMode))
+    {
+        case OversamplingMode::x2: return 2;
+        case OversamplingMode::x4: return 4;
+        case OversamplingMode::x1:
+        default:                   return 1;
+    }
+}
+
 int PentagonAudioProcessor::getCurrentLatencySamples() const noexcept
 {
-    if (const auto factor = getCurrentOversamplingFactor(); factor == 2 && oversampling2x != nullptr)
+    if (const auto factor = getActiveOversamplingFactor(); factor == 2 && oversampling2x != nullptr)
         return static_cast<int>(std::ceil(oversampling2x->getLatencyInSamples()));
     else if (factor == 4 && oversampling4x != nullptr)
         return static_cast<int>(std::ceil(oversampling4x->getLatencyInSamples()));
@@ -262,25 +293,34 @@ int PentagonAudioProcessor::getCurrentLatencySamples() const noexcept
     return 0;
 }
 
+int PentagonAudioProcessor::getLimiterLookaheadSamples() const noexcept
+{
+    return juce::jmax(32, static_cast<int> (std::round(currentSampleRate * 0.002)));
+}
+
+void PentagonAudioProcessor::applyPendingOversamplingMode()
+{
+    activeOversamplingMode = pendingOversamplingMode;
+    currentLatencySamples = getCurrentLatencySamples();
+    dryDelayRingBuffer.clear();
+    dryDelayWritePosition = 0;
+
+    if (oversampling2x != nullptr)
+        oversampling2x->reset();
+
+    if (oversampling4x != nullptr)
+        oversampling4x->reset();
+
+    stageChain.reset();
+    limiterLookaheadRingBuffer.clear();
+    limiterLookaheadWritePosition = 0;
+    limiterGainState = 1.0f;
+}
+
 void PentagonAudioProcessor::updateLatencyForCurrentOversampling()
 {
-    const auto newLatencySamples = getCurrentLatencySamples();
-
-    if (newLatencySamples != currentLatencySamples)
-    {
-        // Dry-path delay must track oversampling latency so dry/wet stays phase aligned.
-        currentLatencySamples = newLatencySamples;
-        dryDelayRingBuffer.clear();
-        dryDelayWritePosition = 0;
-
-        if (oversampling2x != nullptr)
-            oversampling2x->reset();
-
-        if (oversampling4x != nullptr)
-            oversampling4x->reset();
-    }
-
-    setLatencySamples(currentLatencySamples);
+    pendingOversamplingMode = static_cast<int> (oversamplingParam->load());
+    setLatencySamples(getCurrentLatencySamples() + getLimiterLookaheadSamples());
 }
 
 void PentagonAudioProcessor::updateDryLatencyCompensation(juce::AudioBuffer<float>& buffer)
@@ -312,12 +352,24 @@ void PentagonAudioProcessor::updateDryLatencyCompensation(juce::AudioBuffer<floa
 
 float PentagonAudioProcessor::applySafety(const float sample) const noexcept
 {
-    constexpr auto ceiling = 0.90f;
+    constexpr auto ceiling = 0.96f;
 
     if (std::abs(sample) <= ceiling)
         return sample;
 
     return std::tanh(sample / ceiling) * ceiling;
+}
+
+float PentagonAudioProcessor::computeWeightedLoudnessDb(const juce::AudioBuffer<float>& buffer) noexcept
+{
+    const auto rms = computeBufferRms(buffer);
+    float peak = 0.0f;
+
+    for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+        peak = juce::jmax(peak, buffer.getMagnitude(channel, 0, buffer.getNumSamples()));
+
+    const auto weighted = juce::jmax(1.0e-6f, (rms * 0.82f) + (peak * 0.18f));
+    return gainToDb(weighted);
 }
 
 void PentagonAudioProcessor::mixDryWetAndFinish(juce::AudioBuffer<float>& wetBuffer,
@@ -326,8 +378,7 @@ void PentagonAudioProcessor::mixDryWetAndFinish(juce::AudioBuffer<float>& wetBuf
 {
     dryWetSmoother.setTargetValue(dryWetParam->load());
     outputGainDbSmoother.setTargetValue(outputGainParam->load());
-    autoGainDbSmoother.setTargetValue(0.0f);
-    safetyMixSmoother.setTargetValue(safetyEnabledParam->load() > 0.5f ? 1.0f : 0.0f);
+    outputCeilingDbSmoother.setTargetValue(outputCeilingParam->load());
 
     for (int sample = 0; sample < wetBuffer.getNumSamples(); ++sample)
     {
@@ -342,28 +393,67 @@ void PentagonAudioProcessor::mixDryWetAndFinish(juce::AudioBuffer<float>& wetBuf
         }
     }
 
-    // Auto gain compares the incoming program level to the post-chain signal, while the OUTPUT trim remains manual.
-    if (autoGainEnabledParam->load() > 0.5f)
-    {
-        const auto outputRms = computeBufferRms(wetBuffer);
-        const auto targetCompensationDb = juce::jlimit(-18.0f, 18.0f, gainToDb(inputRms) - gainToDb(outputRms));
-        autoGainDbSmoother.setTargetValue(targetCompensationDb);
-    }
+    const auto inputLoudnessDb = gainToDb(juce::jmax(1.0e-6f, inputRms));
+    const auto outputLoudnessDb = computeWeightedLoudnessDb(wetBuffer);
+    autoGainInputLoudnessDb = juce::jmap(0.07f, autoGainInputLoudnessDb, inputLoudnessDb);
+    autoGainOutputLoudnessDb = juce::jmap(0.10f, autoGainOutputLoudnessDb, outputLoudnessDb);
 
-    for (int sample = 0; sample < wetBuffer.getNumSamples(); ++sample)
+    auto targetCompensationDb = 0.0f;
+
+    if (autoGainEnabledParam->load() > 0.5f)
+        targetCompensationDb = juce::jlimit(-12.0f, 12.0f, autoGainInputLoudnessDb - autoGainOutputLoudnessDb);
+
+    autoGainDbSmoother.setTargetValue(targetCompensationDb);
+    autoGainCompensationDb.store(targetCompensationDb);
+}
+
+void PentagonAudioProcessor::applyOutputStage(juce::AudioBuffer<float>& buffer)
+{
+    safetyMixSmoother.setTargetValue(safetyEnabledParam->load() > 0.5f ? 1.0f : 0.0f);
+
+    const auto ringSize = limiterLookaheadRingBuffer.getNumSamples();
+    const auto lookaheadSamples = juce::jmin(getLimiterLookaheadSamples(), ringSize - 1);
+    auto blockLimiterReductionDb = 0.0f;
+
+    for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
     {
         const auto autoGain = dbToGain(autoGainDbSmoother.getNextValue());
         const auto outputGain = dbToGain(outputGainDbSmoother.getNextValue());
+        const auto ceilingGain = dbToGain(outputCeilingDbSmoother.getNextValue());
         const auto safetyMix = safetyMixSmoother.getNextValue();
 
-        for (int channel = 0; channel < wetBuffer.getNumChannels(); ++channel)
+        auto detectorPeak = 0.0f;
+
+        for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
         {
-            auto mixed = wetBuffer.getSample(channel, sample) * autoGain * outputGain;
-            const auto safe = applySafety(mixed);
-            mixed += safetyMix * (safe - mixed);
-            wetBuffer.setSample(channel, sample, mixed);
+            auto* ring = limiterLookaheadRingBuffer.getWritePointer(channel);
+            const auto shaped = buffer.getSample(channel, sample) * autoGain * outputGain;
+            ring[limiterLookaheadWritePosition] = shaped;
+            detectorPeak = juce::jmax(detectorPeak, std::abs(shaped));
         }
+
+        const auto desiredGain = detectorPeak > ceilingGain ? juce::jlimit(0.02f, 1.0f, ceilingGain / detectorPeak) : 1.0f;
+        const auto attackCoeff = std::exp(-1.0f / (0.00018f * static_cast<float> (currentSampleRate)));
+        const auto releaseCoeff = std::exp(-1.0f / (0.085f * static_cast<float> (currentSampleRate)));
+        const auto coeff = desiredGain < limiterGainState ? attackCoeff : releaseCoeff;
+        limiterGainState = desiredGain + (coeff * (limiterGainState - desiredGain));
+
+        const auto readPosition = (limiterLookaheadWritePosition + ringSize - lookaheadSamples) % ringSize;
+
+        for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+        {
+            const auto* ring = limiterLookaheadRingBuffer.getReadPointer(channel);
+            auto limited = ring[readPosition] * limiterGainState;
+            const auto safe = applySafety(limited);
+            limited += safetyMix * (safe - limited);
+            buffer.setSample(channel, sample, limited);
+        }
+
+        limiterLookaheadWritePosition = (limiterLookaheadWritePosition + 1) % ringSize;
+        blockLimiterReductionDb = juce::jmax(blockLimiterReductionDb, gainToDb(juce::jmax(1.0e-5f, limiterGainState)) * -1.0f);
     }
+
+    limiterGainReductionDb.store(blockLimiterReductionDb);
 }
 
 void PentagonAudioProcessor::publishMeters(const float inputPeak, const juce::AudioBuffer<float>& outputBuffer)
@@ -413,34 +503,40 @@ void PentagonAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
 
     const auto inputRms = computeBufferRms(dryBuffer);
 
+    if (pendingOversamplingMode != activeOversamplingMode && inputPeak < 1.0e-3f)
+        applyPendingOversamplingMode();
+
     updateLatencyForCurrentOversampling();
 
     const auto orderPacked = packedChainOrder.load(std::memory_order_acquire);
     const auto tweakMode = static_cast<int> (tweakModeParam->load());
-    const auto oversamplingFactor = getCurrentOversamplingFactor();
+    const auto oversamplingFactor = getActiveOversamplingFactor();
+    const auto auditionStage = auditionStageIndex.load();
+    const auto auditionMode = static_cast<StageAuditionMode> (auditionModeValue.load());
 
     if (oversamplingFactor == 1)
     {
         juce::dsp::AudioBlock<float> block(buffer);
-        stageChain.process(block, orderPacked, tweakMode, currentSampleRate);
+        stageChain.process(block, orderPacked, tweakMode, currentSampleRate, auditionStage, auditionMode);
     }
     else if (oversamplingFactor == 2 && oversampling2x != nullptr)
     {
         juce::dsp::AudioBlock<float> block(buffer);
         auto oversampledBlock = oversampling2x->processSamplesUp(block);
-        stageChain.process(oversampledBlock, orderPacked, tweakMode, currentSampleRate * 2.0);
+        stageChain.process(oversampledBlock, orderPacked, tweakMode, currentSampleRate * 2.0, auditionStage, auditionMode);
         oversampling2x->processSamplesDown(block);
     }
     else if (oversampling4x != nullptr)
     {
         juce::dsp::AudioBlock<float> block(buffer);
         auto oversampledBlock = oversampling4x->processSamplesUp(block);
-        stageChain.process(oversampledBlock, orderPacked, tweakMode, currentSampleRate * 4.0);
+        stageChain.process(oversampledBlock, orderPacked, tweakMode, currentSampleRate * 4.0, auditionStage, auditionMode);
         oversampling4x->processSamplesDown(block);
     }
 
     updateDryLatencyCompensation(dryBuffer);
     mixDryWetAndFinish(buffer, dryBuffer, inputRms);
+    applyOutputStage(buffer);
     publishMeters(inputPeak, buffer);
 }
 
@@ -493,6 +589,39 @@ void PentagonAudioProcessor::moveStage(const StageType stage, const int directio
     setChainOrder(order);
 }
 
+void PentagonAudioProcessor::moveStageToIndex(const StageType stage, const int targetIndex)
+{
+    auto order = getChainOrder();
+    const auto begin = order.begin();
+    const auto end = order.end();
+    const auto it = std::find(begin, end, stage);
+
+    if (it == end)
+        return;
+
+    const auto currentIndex = static_cast<int> (std::distance(begin, it));
+    const auto clampedTarget = juce::jlimit(0, numStages - 1, targetIndex);
+
+    if (currentIndex == clampedTarget)
+        return;
+
+    const auto moved = *it;
+
+    if (currentIndex < clampedTarget)
+    {
+        for (int index = currentIndex; index < clampedTarget; ++index)
+            order[static_cast<size_t> (index)] = order[static_cast<size_t> (index + 1)];
+    }
+    else
+    {
+        for (int index = currentIndex; index > clampedTarget; --index)
+            order[static_cast<size_t> (index)] = order[static_cast<size_t> (index - 1)];
+    }
+
+    order[static_cast<size_t> (clampedTarget)] = moved;
+    setChainOrder(order);
+}
+
 void PentagonAudioProcessor::setChainOrder(std::array<StageType, numStages> order)
 {
     if (! isValidChainOrder(order))
@@ -526,6 +655,35 @@ float PentagonAudioProcessor::getStageMeterDb(const StageType stage) const noexc
     return stageMeterDb[static_cast<size_t> (toIndex(stage))].load();
 }
 
+float PentagonAudioProcessor::getLimiterGainReductionDb() const noexcept
+{
+    return limiterGainReductionDb.load();
+}
+
+float PentagonAudioProcessor::getAutoGainCompensationDb() const noexcept
+{
+    return autoGainCompensationDb.load();
+}
+
+juce::String PentagonAudioProcessor::getOversamplingStatusText() const
+{
+    const auto modeToText = [] (const int mode)
+    {
+        switch (static_cast<OversamplingMode> (mode))
+        {
+            case OversamplingMode::x2: return juce::String("2x");
+            case OversamplingMode::x4: return juce::String("4x");
+            case OversamplingMode::x1:
+            default:                   return juce::String("1x");
+        }
+    };
+
+    if (pendingOversamplingMode != activeOversamplingMode)
+        return modeToText(activeOversamplingMode) + " -> " + modeToText(pendingOversamplingMode) + " pending";
+
+    return modeToText(activeOversamplingMode) + " active";
+}
+
 juce::AudioProcessorValueTreeState& PentagonAudioProcessor::getValueTreeState() noexcept
 {
     return parameters;
@@ -556,6 +714,7 @@ void PentagonAudioProcessor::applyFactoryPreset(const int index)
     setParameterPlainValue(IDs::variEnabled, 0.0f);
     setParameterPlainValue(IDs::tubeEnabled, 0.0f);
     setParameterPlainValue(IDs::autoGainEnabled, 0.0f);
+    setParameterPlainValue(IDs::outputCeilingDb, -0.8f);
     setParameterPlainValue(IDs::fetRatio, 0.0f);
     setParameterPlainValue(IDs::fetSaturationMix, 100.0f);
     setParameterPlainValue(IDs::optoSaturationMix, 100.0f);
@@ -569,6 +728,7 @@ void PentagonAudioProcessor::applyFactoryPreset(const int index)
             setChainOrder(defaultChainOrder);
             setParameterPlainValue(IDs::dryWet, 0.71f);
             setParameterPlainValue(IDs::outputGainDb, 0.0f);
+            setParameterPlainValue(IDs::outputCeilingDb, -0.8f);
             setParameterPlainValue(IDs::safetyEnabled, 1.0f);
             setParameterPlainValue(IDs::oversampling, 0.0f);
             setParameterPlainValue(IDs::tweakMode, 2.0f);
@@ -619,6 +779,7 @@ void PentagonAudioProcessor::applyFactoryPreset(const int index)
             setChainOrder({ StageType::fet76, StageType::vca160, StageType::opto2a, StageType::variMu, StageType::tube670 });
             setParameterPlainValue(IDs::dryWet, 0.92f);
             setParameterPlainValue(IDs::outputGainDb, -1.5f);
+            setParameterPlainValue(IDs::outputCeilingDb, -1.1f);
             setParameterPlainValue(IDs::safetyEnabled, 1.0f);
             setParameterPlainValue(IDs::oversampling, 2.0f);
             setParameterPlainValue(IDs::tweakMode, 5.0f);
@@ -649,6 +810,7 @@ void PentagonAudioProcessor::applyFactoryPreset(const int index)
             setChainOrder({ StageType::variMu, StageType::opto2a, StageType::tube670, StageType::fet76, StageType::vca160 });
             setParameterPlainValue(IDs::dryWet, 0.68f);
             setParameterPlainValue(IDs::outputGainDb, 0.5f);
+            setParameterPlainValue(IDs::outputCeilingDb, -0.8f);
             setParameterPlainValue(IDs::safetyEnabled, 1.0f);
             setParameterPlainValue(IDs::oversampling, 1.0f);
             setParameterPlainValue(IDs::tweakMode, 3.0f);
@@ -684,6 +846,7 @@ void PentagonAudioProcessor::applyFactoryPreset(const int index)
             setChainOrder({ StageType::opto2a, StageType::tube670, StageType::vca160, StageType::fet76, StageType::variMu });
             setParameterPlainValue(IDs::dryWet, 0.78f);
             setParameterPlainValue(IDs::outputGainDb, 0.0f);
+            setParameterPlainValue(IDs::outputCeilingDb, -0.8f);
             setParameterPlainValue(IDs::safetyEnabled, 1.0f);
             setParameterPlainValue(IDs::oversampling, 1.0f);
             setParameterPlainValue(IDs::tweakMode, 4.0f);
@@ -716,6 +879,216 @@ void PentagonAudioProcessor::applyFactoryPreset(const int index)
     }
 }
 
+juce::ValueTree PentagonAudioProcessor::createSnapshotState()
+{
+    auto snapshot = parameters.copyState();
+
+    for (int childIndex = snapshot.getNumChildren(); --childIndex >= 0;)
+    {
+        if (snapshot.getChild(childIndex).hasType(userPresetSlotsType))
+            snapshot.removeChild(childIndex, nullptr);
+    }
+
+    snapshot.setProperty(IDs::chainOrder, static_cast<int> (packedChainOrder.load()), nullptr);
+    snapshot.setProperty(IDs::presetIndex, currentPresetIndex.load(), nullptr);
+    return snapshot;
+}
+
+juce::ValueTree PentagonAudioProcessor::getUserPresetContainer()
+{
+    for (int childIndex = 0; childIndex < parameters.state.getNumChildren(); ++childIndex)
+    {
+        auto child = parameters.state.getChild(childIndex);
+
+        if (child.hasType(userPresetSlotsType))
+            return child;
+    }
+
+    auto container = juce::ValueTree(userPresetSlotsType);
+
+    for (int index = 0; index < numUserPresetSlots; ++index)
+    {
+        auto slot = juce::ValueTree(userPresetSlotType);
+        slot.setProperty(userPresetSlotNameProperty, juce::String("SLOT ") + juce::String(index + 1), nullptr);
+        slot.setProperty(userPresetSlotSnapshotProperty, juce::String(), nullptr);
+        container.addChild(slot, -1, nullptr);
+    }
+
+    parameters.state.addChild(container, -1, nullptr);
+    return parameters.state.getChild(parameters.state.getNumChildren() - 1);
+}
+
+const juce::ValueTree PentagonAudioProcessor::getUserPresetContainer() const
+{
+    for (int childIndex = 0; childIndex < parameters.state.getNumChildren(); ++childIndex)
+    {
+        const auto child = parameters.state.getChild(childIndex);
+
+        if (child.hasType(userPresetSlotsType))
+            return child;
+    }
+
+    return {};
+}
+
+juce::ValueTree PentagonAudioProcessor::getUserPresetSlotNode(const int index) const
+{
+    if (! juce::isPositiveAndBelow(index, numUserPresetSlots))
+        return {};
+
+    const auto container = getUserPresetContainer();
+
+    if (! container.isValid() || index >= container.getNumChildren())
+        return {};
+
+    return container.getChild(index);
+}
+
+void PentagonAudioProcessor::updateUserPresetSlot(const int index, const juce::ValueTree& snapshot, const juce::String& name)
+{
+    auto container = getUserPresetContainer();
+
+    if (! juce::isPositiveAndBelow(index, juce::jmin(numUserPresetSlots, container.getNumChildren())))
+        return;
+
+    auto slot = container.getChild(index);
+    slot.setProperty(userPresetSlotNameProperty, name, nullptr);
+    slot.setProperty(userPresetSlotSnapshotProperty, snapshot.toXmlString(), nullptr);
+}
+
+juce::StringArray PentagonAudioProcessor::getUserPresetSlotNames() const
+{
+    juce::StringArray names;
+    const auto container = getUserPresetContainer();
+
+    for (int index = 0; index < numUserPresetSlots; ++index)
+    {
+        auto name = juce::String("SLOT ") + juce::String(index + 1);
+
+        if (container.isValid() && index < container.getNumChildren())
+            name = container.getChild(index).getProperty(userPresetSlotNameProperty, name).toString();
+
+        names.add(name);
+    }
+
+    return names;
+}
+
+bool PentagonAudioProcessor::hasUserPresetSlot(const int index) const
+{
+    const auto slot = getUserPresetSlotNode(index);
+    return slot.isValid() && slot.getProperty(userPresetSlotSnapshotProperty).toString().isNotEmpty();
+}
+
+void PentagonAudioProcessor::applySnapshotState(const juce::ValueTree& snapshot)
+{
+    if (! snapshot.isValid())
+        return;
+
+    auto restored = snapshot.createCopy();
+
+    for (int childIndex = restored.getNumChildren(); --childIndex >= 0;)
+    {
+        if (restored.getChild(childIndex).hasType(userPresetSlotsType))
+            restored.removeChild(childIndex, nullptr);
+    }
+
+    const auto userPresets = getUserPresetContainer();
+
+    if (userPresets.isValid())
+        restored.addChild(userPresets.createCopy(), -1, nullptr);
+
+    parameters.replaceState(restored);
+
+    auto restoredPackedOrder = static_cast<uint32_t> (static_cast<int> (parameters.state.getProperty(IDs::chainOrder, static_cast<int> (packChainOrder(defaultChainOrder)))));
+    const auto unpacked = unpackChainOrder(restoredPackedOrder);
+
+    if (! isValidChainOrder(unpacked))
+        restoredPackedOrder = packChainOrder(defaultChainOrder);
+
+    setPackedChainOrderInternal(restoredPackedOrder, true);
+    currentPresetIndex.store(static_cast<int> (parameters.state.getProperty(IDs::presetIndex, -1)));
+}
+
+void PentagonAudioProcessor::saveUserPresetSlot(const int index)
+{
+    if (! juce::isPositiveAndBelow(index, numUserPresetSlots))
+        return;
+
+    const auto snapshot = createSnapshotState();
+    const auto factoryNames = getFactoryPresetNames();
+    const auto currentIndex = currentPresetIndex.load();
+    const auto defaultName = juce::isPositiveAndBelow(currentIndex, factoryNames.size())
+        ? factoryNames[currentIndex] + " USER"
+        : juce::String("SLOT ") + juce::String(index + 1);
+
+    updateUserPresetSlot(index, snapshot, defaultName);
+}
+
+void PentagonAudioProcessor::loadUserPresetSlot(const int index)
+{
+    const auto slot = getUserPresetSlotNode(index);
+
+    if (! slot.isValid())
+        return;
+
+    const auto xmlText = slot.getProperty(userPresetSlotSnapshotProperty).toString();
+
+    if (xmlText.isEmpty())
+        return;
+
+    if (auto xml = juce::parseXML(xmlText))
+        applySnapshotState(juce::ValueTree::fromXml(*xml));
+}
+
+void PentagonAudioProcessor::captureComparisonSnapshot(const bool slotA)
+{
+    if (slotA)
+    {
+        snapshotA = createSnapshotState();
+        hasSnapshotA = true;
+    }
+    else
+    {
+        snapshotB = createSnapshotState();
+        hasSnapshotB = true;
+    }
+}
+
+bool PentagonAudioProcessor::hasComparisonSnapshot(const bool slotA) const noexcept
+{
+    return slotA ? hasSnapshotA : hasSnapshotB;
+}
+
+void PentagonAudioProcessor::recallComparisonSnapshot(const bool slotA)
+{
+    if (slotA && hasSnapshotA)
+        applySnapshotState(snapshotA);
+    else if (! slotA && hasSnapshotB)
+        applySnapshotState(snapshotB);
+}
+
+void PentagonAudioProcessor::setStageAudition(const StageType stage, const StageAuditionMode mode)
+{
+    if (mode == StageAuditionMode::off)
+    {
+        auditionStageIndex.store(-1);
+        auditionModeValue.store(static_cast<int> (StageAuditionMode::off));
+        return;
+    }
+
+    auditionStageIndex.store(toIndex(stage));
+    auditionModeValue.store(static_cast<int> (mode));
+}
+
+StageAuditionMode PentagonAudioProcessor::getStageAuditionMode(const StageType stage) const noexcept
+{
+    if (auditionStageIndex.load() != toIndex(stage))
+        return StageAuditionMode::off;
+
+    return static_cast<StageAuditionMode> (auditionModeValue.load());
+}
+
 int PentagonAudioProcessor::getCurrentProgramIndex() const noexcept
 {
     return currentPresetIndex.load();
@@ -741,14 +1114,8 @@ void PentagonAudioProcessor::setStateInformation(const void* data, const int siz
             parameters.replaceState(tree);
     }
 
-    auto restoredPackedOrder = static_cast<uint32_t> (static_cast<int>(parameters.state.getProperty(IDs::chainOrder, static_cast<int> (packChainOrder(defaultChainOrder)))));
-    const auto unpacked = unpackChainOrder(restoredPackedOrder);
-
-    if (! isValidChainOrder(unpacked))
-        restoredPackedOrder = packChainOrder(defaultChainOrder);
-
-    setPackedChainOrderInternal(restoredPackedOrder, true);
-    currentPresetIndex.store(static_cast<int> (parameters.state.getProperty(IDs::presetIndex, 0)));
+    getUserPresetContainer();
+    applySnapshotState(parameters.copyState());
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

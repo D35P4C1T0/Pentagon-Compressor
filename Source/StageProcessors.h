@@ -95,6 +95,58 @@ inline float saturateSample(const float sample, const float amount) noexcept
     return shaped / juce::jmax(0.25f, normaliser);
 }
 
+inline float saturateFetSample(const float sample, const float amount) noexcept
+{
+    if (amount <= 0.0f)
+        return sample;
+
+    const auto drive = 1.0f + (amount * 7.0f);
+    const auto asym = sample + (0.12f * amount);
+    const auto clipped = std::tanh(asym * drive);
+    return clipped / juce::jmax(0.3f, std::tanh(drive));
+}
+
+inline float saturateOptoSample(const float sample, const float amount) noexcept
+{
+    if (amount <= 0.0f)
+        return sample;
+
+    const auto drive = 1.0f + (amount * 3.0f);
+    return (sample * drive) / (1.0f + (std::abs(sample) * drive));
+}
+
+inline float saturateVcaSample(const float sample, const float amount) noexcept
+{
+    if (amount <= 0.0f)
+        return sample;
+
+    const auto drive = 1.0f + (amount * 4.5f);
+    const auto cubic = (sample * drive) - (0.18f * amount * std::pow(sample * drive, 3.0f));
+    return juce::jlimit(-1.25f, 1.25f, cubic);
+}
+
+inline float saturateVariMuSample(const float sample, const float amount) noexcept
+{
+    if (amount <= 0.0f)
+        return sample;
+
+    const auto drive = 1.0f + (amount * 4.0f);
+    const auto biased = sample + (0.08f * amount);
+    return std::tanh(biased * drive) * (1.0f - (0.08f * amount));
+}
+
+inline float saturateTubeSample(const float sample, const float amount) noexcept
+{
+    if (amount <= 0.0f)
+        return sample;
+
+    const auto drive = 1.0f + (amount * 5.8f);
+    const auto biased = sample + (0.16f * amount);
+    const auto soft = std::tanh(biased * drive);
+    const auto folded = soft - (0.05f * amount * std::sin(soft * juce::MathConstants<float>::pi));
+    return folded / juce::jmax(0.32f, std::tanh(drive));
+}
+
 inline int readChoiceValue(const std::atomic<float>* value) noexcept
 {
     return static_cast<int> (std::lround(value->load()));
@@ -170,6 +222,7 @@ public:
     {
         StageBase::reset();
         envelopeDb = 0.0f;
+        detectorState = 0.0f;
     }
 
     void process(juce::dsp::AudioBlock<float>& block, const MacroTuning& macro, const double effectiveSampleRate)
@@ -188,7 +241,7 @@ public:
         const auto saturation = juce::jlimit(0.0f, 0.75f, saturationAmountFromMode(readChoiceValue(saturationMode)) + macro.saturationBoost);
         float blockPeakReductionDb = 0.0f;
 
-        for (size_t sample = 0; sample < block.getNumSamples(); ++sample)
+        for (int sample = 0; sample < static_cast<int> (block.getNumSamples()); ++sample)
         {
             const auto inGain = dbToGain(inputGainDbSmoother.getNextValue());
             const auto outGain = dbToGain(outputGainDbSmoother.getNextValue());
@@ -203,11 +256,13 @@ public:
 
             for (int channel = 0; channel < numChannels; ++channel)
             {
-                dry[static_cast<size_t> (channel)] = block.getSample(static_cast<size_t> (channel), sample);
+                dry[static_cast<size_t> (channel)] = block.getSample(channel, sample);
                 linkedPeak = juce::jmax(linkedPeak, std::abs(dry[static_cast<size_t> (channel)] * inGain));
             }
 
-            const auto detectorDb = gainToDb(linkedPeak);
+            const auto edge = std::abs(linkedPeak - detectorState);
+            detectorState = (0.94f * detectorState) + (0.06f * linkedPeak);
+            const auto detectorDb = gainToDb(linkedPeak + (edge * 0.35f));
             const auto targetReductionDb = computeReductionDb(detectorDb, threshold, ratioValue, 2.0f);
             const auto coeff = envelopeCoeff(targetReductionDb > envelopeDb ? attackSeconds : releaseSeconds, effectiveSampleRate);
             envelopeDb = (coeff * envelopeDb) + ((1.0f - coeff) * targetReductionDb);
@@ -218,9 +273,9 @@ public:
             for (int channel = 0; channel < numChannels; ++channel)
             {
                 auto processed = dry[static_cast<size_t> (channel)] * inGain * gain;
-                processed = saturationBlend(processed, saturateSample(processed, saturation), satMix);
+                processed = saturationBlend(processed, saturateFetSample(processed, saturation), satMix);
                 processed *= outGain;
-                block.setSample(static_cast<size_t> (channel), sample, dry[static_cast<size_t> (channel)] + (mix * (processed - dry[static_cast<size_t> (channel)])));
+                block.setSample(channel, sample, dry[static_cast<size_t> (channel)] + (mix * (processed - dry[static_cast<size_t> (channel)])));
             }
         }
 
@@ -245,6 +300,7 @@ private:
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> thresholdDbSmoother;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> saturationMixSmoother;
     float envelopeDb {};
+    float detectorState {};
 };
 
 class Opto2AStage final : public StageBase
@@ -275,6 +331,7 @@ public:
         StageBase::reset();
         envelopeDb = 0.0f;
         highpassState = 0.0f;
+        releaseMemory = 0.0f;
     }
 
     void process(juce::dsp::AudioBlock<float>& block, const MacroTuning& macro, const double effectiveSampleRate)
@@ -289,7 +346,7 @@ public:
         const auto saturation = juce::jlimit(0.0f, 0.75f, saturationAmountFromMode(readChoiceValue(saturationMode)) + macro.saturationBoost);
         float blockPeakReductionDb = 0.0f;
 
-        for (size_t sample = 0; sample < block.getNumSamples(); ++sample)
+        for (int sample = 0; sample < static_cast<int> (block.getNumSamples()); ++sample)
         {
             const auto reductionControl = peakReductionSmoother.getNextValue();
             const auto threshold = juce::jmap(reductionControl, 0.0f, 100.0f, 0.0f, -45.0f) + macro.thresholdOffsetDb;
@@ -303,7 +360,7 @@ public:
 
             for (int channel = 0; channel < numChannels; ++channel)
             {
-                dry[static_cast<size_t> (channel)] = block.getSample(static_cast<size_t> (channel), sample);
+                dry[static_cast<size_t> (channel)] = block.getSample(channel, sample);
                 linked += std::abs(dry[static_cast<size_t> (channel)]);
             }
 
@@ -313,7 +370,8 @@ public:
             const auto detector = juce::jmax(1.0e-6f, linked + (std::abs(hfComponent) * hf));
             const auto detectorDb = gainToDb(detector);
             const auto targetReductionDb = computeReductionDb(detectorDb, threshold, ratio, 6.0f);
-            const auto releaseSeconds = juce::jmap(juce::jlimit(0.0f, 1.0f, envelopeDb / 18.0f), 0.0f, 1.0f, 0.12f, 0.9f) * macro.releaseScale;
+            releaseMemory = juce::jmax(releaseMemory * 0.985f, envelopeDb);
+            const auto releaseSeconds = juce::jmap(juce::jlimit(0.0f, 1.0f, releaseMemory / 18.0f), 0.0f, 1.0f, 0.15f, 1.15f) * macro.releaseScale;
             const auto coeff = envelopeCoeff(targetReductionDb > envelopeDb ? 0.01f * macro.attackScale : releaseSeconds, effectiveSampleRate);
             envelopeDb = (coeff * envelopeDb) + ((1.0f - coeff) * targetReductionDb);
             blockPeakReductionDb = juce::jmax(blockPeakReductionDb, envelopeDb);
@@ -323,9 +381,9 @@ public:
             for (int channel = 0; channel < numChannels; ++channel)
             {
                 auto processed = dry[static_cast<size_t> (channel)] * gain;
-                processed = saturationBlend(processed, saturateSample(processed, saturation), satMix);
+                processed = saturationBlend(processed, saturateOptoSample(processed, saturation), satMix);
                 processed *= makeup;
-                block.setSample(static_cast<size_t> (channel), sample, dry[static_cast<size_t> (channel)] + (mix * (processed - dry[static_cast<size_t> (channel)])));
+                block.setSample(channel, sample, dry[static_cast<size_t> (channel)] + (mix * (processed - dry[static_cast<size_t> (channel)])));
             }
         }
 
@@ -347,6 +405,7 @@ private:
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> saturationMixSmoother;
     float envelopeDb {};
     float highpassState {};
+    float releaseMemory {};
 };
 
 class Vca160Stage final : public StageBase
@@ -387,7 +446,7 @@ public:
         const auto saturation = juce::jlimit(0.0f, 0.75f, saturationAmountFromMode(readChoiceValue(saturationMode)) + macro.saturationBoost);
         float blockPeakReductionDb = 0.0f;
 
-        for (size_t sample = 0; sample < block.getNumSamples(); ++sample)
+        for (int sample = 0; sample < static_cast<int> (block.getNumSamples()); ++sample)
         {
             const auto threshold = thresholdDbSmoother.getNextValue();
             const auto makeup = dbToGain(makeupDbSmoother.getNextValue());
@@ -395,17 +454,21 @@ public:
             const auto mix = enabledMix.getNextValue();
 
             float linkedPeak = 0.0f;
+            float linkedRms = 0.0f;
             std::array<float, 2> dry {};
 
             for (int channel = 0; channel < numChannels; ++channel)
             {
-                dry[static_cast<size_t> (channel)] = block.getSample(static_cast<size_t> (channel), sample);
-                linkedPeak += dry[static_cast<size_t> (channel)] * dry[static_cast<size_t> (channel)];
+                dry[static_cast<size_t> (channel)] = block.getSample(channel, sample);
+                const auto sampleValue = dry[static_cast<size_t> (channel)];
+                linkedPeak = juce::jmax(linkedPeak, std::abs(sampleValue));
+                linkedRms += sampleValue * sampleValue;
             }
 
-            linkedPeak = std::sqrt(linkedPeak / static_cast<float> (numChannels));
+            linkedRms = std::sqrt(linkedRms / static_cast<float> (numChannels));
+            const auto detector = juce::jmap(overeasy->load() > 0.5f ? 0.35f : 0.62f, linkedRms, linkedPeak);
 
-            const auto detectorDb = gainToDb(linkedPeak);
+            const auto detectorDb = gainToDb(detector);
             const auto targetReductionDb = computeReductionDb(detectorDb, threshold, 4.0f, knee);
             const auto coeff = envelopeCoeff(targetReductionDb > envelopeDb ? 0.0012f * macro.attackScale : 0.10f * macro.releaseScale, effectiveSampleRate);
             envelopeDb = (coeff * envelopeDb) + ((1.0f - coeff) * targetReductionDb);
@@ -416,9 +479,9 @@ public:
             for (int channel = 0; channel < numChannels; ++channel)
             {
                 auto processed = dry[static_cast<size_t> (channel)] * gain;
-                processed = saturationBlend(processed, saturateSample(processed, saturation), satMix);
+                processed = saturationBlend(processed, saturateVcaSample(processed, saturation), satMix);
                 processed *= makeup;
-                block.setSample(static_cast<size_t> (channel), sample, dry[static_cast<size_t> (channel)] + (mix * (processed - dry[static_cast<size_t> (channel)])));
+                block.setSample(channel, sample, dry[static_cast<size_t> (channel)] + (mix * (processed - dry[static_cast<size_t> (channel)])));
             }
         }
 
@@ -467,6 +530,7 @@ public:
         StageBase::reset();
         envelopeDb = 0.0f;
         rmsState = 0.0f;
+        detectorDriveState = 0.0f;
     }
 
     void process(juce::dsp::AudioBlock<float>& block, const MacroTuning& macro, const double effectiveSampleRate)
@@ -480,7 +544,7 @@ public:
         const auto saturation = juce::jlimit(0.0f, 0.85f, saturationAmountFromMode(readChoiceValue(saturationMode)) + macro.saturationBoost + 0.03f);
         float blockPeakReductionDb = 0.0f;
 
-        for (size_t sample = 0; sample < block.getNumSamples(); ++sample)
+        for (int sample = 0; sample < static_cast<int> (block.getNumSamples()); ++sample)
         {
             const auto threshold = thresholdDbSmoother.getNextValue();
             const auto attackSeconds = juce::jlimit(0.0001f, 0.25f, attackMsSmoother.getNextValue() * 0.001f);
@@ -494,11 +558,13 @@ public:
 
             for (int channel = 0; channel < numChannels; ++channel)
             {
-                dry[static_cast<size_t> (channel)] = block.getSample(static_cast<size_t> (channel), sample);
+                dry[static_cast<size_t> (channel)] = block.getSample(channel, sample);
                 linkedSquare += dry[static_cast<size_t> (channel)] * dry[static_cast<size_t> (channel)];
             }
 
             linkedSquare /= static_cast<float> (numChannels);
+            detectorDriveState = (0.92f * detectorDriveState) + (0.08f * linkedSquare);
+            linkedSquare = (0.78f * linkedSquare) + (0.22f * std::pow(std::tanh(std::sqrt(detectorDriveState) * 1.8f), 2.0f));
             const auto rmsCoeff = envelopeCoeff(0.02f, effectiveSampleRate);
             rmsState = (rmsCoeff * rmsState) + ((1.0f - rmsCoeff) * linkedSquare);
 
@@ -513,9 +579,9 @@ public:
             for (int channel = 0; channel < numChannels; ++channel)
             {
                 auto processed = dry[static_cast<size_t> (channel)] * gain;
-                processed = saturationBlend(processed, saturateSample(processed, saturation), satMix);
+                processed = saturationBlend(processed, saturateVariMuSample(processed, saturation), satMix);
                 processed *= makeup;
-                block.setSample(static_cast<size_t> (channel), sample, dry[static_cast<size_t> (channel)] + (mix * (processed - dry[static_cast<size_t> (channel)])));
+                block.setSample(channel, sample, dry[static_cast<size_t> (channel)] + (mix * (processed - dry[static_cast<size_t> (channel)])));
             }
         }
 
@@ -548,6 +614,7 @@ private:
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> saturationMixSmoother;
     float envelopeDb {};
     float rmsState {};
+    float detectorDriveState {};
 };
 
 class Tube670Stage final : public StageBase
@@ -593,7 +660,7 @@ public:
         float blockPeakReductionDb = 0.0f;
         constexpr auto invSqrt2 = 0.70710678118f;
 
-        for (size_t sample = 0; sample < block.getNumSamples(); ++sample)
+        for (int sample = 0; sample < static_cast<int> (block.getNumSamples()); ++sample)
         {
             const auto threshold = thresholdDbSmoother.getNextValue();
             const auto makeup = dbToGain(makeupDbSmoother.getNextValue());
@@ -623,8 +690,8 @@ public:
                 auto processedMid = mid * applyGainCell(mid, envelopeDbMid);
                 auto processedSide = side * applyGainCell(side, envelopeDbSide);
 
-                processedMid = saturationBlend(processedMid, saturateSample(processedMid, saturation), satMix) * makeup;
-                processedSide = saturationBlend(processedSide, saturateSample(processedSide, saturation), satMix) * makeup;
+                processedMid = saturationBlend(processedMid, saturateTubeSample(processedMid, saturation), satMix) * makeup;
+                processedSide = saturationBlend(processedSide, saturateTubeSample(processedSide, saturation), satMix) * makeup;
 
                 const auto leftWet = (processedMid + processedSide) * invSqrt2;
                 const auto rightWet = (processedMid - processedSide) * invSqrt2;
@@ -641,7 +708,7 @@ public:
 
             for (int channel = 0; channel < numChannels; ++channel)
             {
-                dry[static_cast<size_t> (channel)] = block.getSample(static_cast<size_t> (channel), sample);
+                dry[static_cast<size_t> (channel)] = block.getSample(channel, sample);
                 linkedPeak = juce::jmax(linkedPeak, std::abs(dry[static_cast<size_t> (channel)]));
             }
 
@@ -656,9 +723,9 @@ public:
             for (int channel = 0; channel < numChannels; ++channel)
             {
                 auto processed = dry[static_cast<size_t> (channel)] * gain;
-                processed = saturationBlend(processed, saturateSample(processed, saturation), satMix);
+                processed = saturationBlend(processed, saturateTubeSample(processed, saturation), satMix);
                 processed *= makeup;
-                block.setSample(static_cast<size_t> (channel), sample, dry[static_cast<size_t> (channel)] + (mix * (processed - dry[static_cast<size_t> (channel)])));
+                block.setSample(channel, sample, dry[static_cast<size_t> (channel)] + (mix * (processed - dry[static_cast<size_t> (channel)])));
             }
         }
 
@@ -714,6 +781,7 @@ public:
         vca160.prepare(spec);
         variMu.prepare(spec);
         tube670.prepare(spec);
+        scratchBuffer.setSize(spec.numChannels, spec.maximumBlockSize, false, false, true);
     }
 
     void reset()
@@ -723,19 +791,29 @@ public:
         vca160.reset();
         variMu.reset();
         tube670.reset();
+        scratchBuffer.clear();
     }
 
     void process(juce::dsp::AudioBlock<float>& block,
                  const uint32_t packedOrder,
                  const int tweakMode,
-                 const double effectiveSampleRate)
+                 const double effectiveSampleRate,
+                 const int auditionStageIndex = -1,
+                 const StageAuditionMode auditionMode = StageAuditionMode::off)
     {
         // The packed order lets the UI reorder stages without touching the audio thread with locks.
         const auto macro = getMacroTuning(tweakMode);
         const auto order = unpackChainOrder(packedOrder);
+        const auto auditionEnabled = auditionStageIndex >= 0 && auditionMode != StageAuditionMode::off;
 
         for (const auto stage : order)
         {
+            if (auditionEnabled)
+            {
+                for (int channel = 0; channel < static_cast<int> (block.getNumChannels()); ++channel)
+                    scratchBuffer.copyFrom(channel, 0, block.getChannelPointer(static_cast<size_t> (channel)), static_cast<int> (block.getNumSamples()));
+            }
+
             switch (stage)
             {
                 case StageType::fet76:   fet76.process(block, macro, effectiveSampleRate); break;
@@ -744,6 +822,23 @@ public:
                 case StageType::variMu:  variMu.process(block, macro, effectiveSampleRate); break;
                 case StageType::tube670: tube670.process(block, macro, effectiveSampleRate); break;
             }
+
+            if (! auditionEnabled || toIndex(stage) != auditionStageIndex)
+                continue;
+
+            if (auditionMode == StageAuditionMode::delta)
+            {
+                for (int channel = 0; channel < static_cast<int> (block.getNumChannels()); ++channel)
+                {
+                    auto* samples = block.getChannelPointer(static_cast<size_t> (channel));
+                    const auto* before = scratchBuffer.getReadPointer(channel);
+
+                    for (int sample = 0; sample < static_cast<int> (block.getNumSamples()); ++sample)
+                        samples[sample] -= before[sample];
+                }
+            }
+
+            break;
         }
     }
 
@@ -764,5 +859,6 @@ private:
     Vca160Stage vca160;
     VariMuStage variMu;
     Tube670Stage tube670;
+    juce::AudioBuffer<float> scratchBuffer;
 };
 } // namespace pentagon

@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(PENTAGON_USE_FETCHCONTENT "Download JUCE automatically when JUCE_DIR or third_party/JUCE are unavailable." ON)
+option(PENTAGON_BUILD_TESTS "Build Pentagon smoke tests." ON)
 
 if (DEFINED JUCE_DIR)
     add_subdirectory(${JUCE_DIR} JUCE)
@@ -67,3 +68,43 @@ target_link_libraries(Pentagon
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags
 )
+
+if (PENTAGON_BUILD_TESTS)
+    include(CTest)
+
+    juce_add_console_app(PentagonSmokeTests
+        PRODUCT_NAME "PentagonSmokeTests"
+    )
+
+    target_sources(PentagonSmokeTests
+        PRIVATE
+            Tests/PentagonSmokeTests.cpp
+            Source/ParameterIds.h
+            Source/StageProcessors.h
+            Source/PluginProcessor.h
+            Source/PluginProcessor.cpp
+            Source/PluginEditor.h
+            Source/PluginEditor.cpp
+    )
+
+    target_compile_definitions(PentagonSmokeTests
+        PRIVATE
+            JUCE_WEB_BROWSER=0
+            JUCE_USE_CURL=0
+            JUCE_VST3_CAN_REPLACE_VST2=0
+    )
+
+    target_link_libraries(PentagonSmokeTests
+        PRIVATE
+            juce::juce_audio_processors
+            juce::juce_audio_utils
+            juce::juce_dsp
+            juce::juce_gui_extra
+        PUBLIC
+            juce::juce_recommended_config_flags
+            juce::juce_recommended_lto_flags
+            juce::juce_recommended_warning_flags
+    )
+
+    add_test(NAME PentagonSmokeTests COMMAND PentagonSmokeTests)
+endif()

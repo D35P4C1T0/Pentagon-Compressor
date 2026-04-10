@@ -11,10 +11,11 @@ Implemented features:
 - Five serial compressor stages: `FET76`, `OPTO2A`, `VCA160`, `VARIMU`, `TUBE670`
 - Per-stage enable, parameter controls, saturation mode, and GR meter
 - Reorderable chain with persistent stage order
-- Global `Dry/Wet`, `Output`, `Safety`, `Oversampling`, `Tweak`, and preset selector
+- Global `Dry/Wet`, `Output`, `Ceiling`, lookahead limit, deferred oversampling switching, `Tweak`, and preset controls
 - Input/output metering
 - Oversampled wet path with dry-path latency compensation
-- Linux VST3 build target
+- Stage `SOLO` / `DELTA` audition modes, collapsible cards, drag reordering, and A/B plus user preset slots
+- Linux, macOS, and Windows VST3 build targets
 
 ## Requirements
 
@@ -59,7 +60,7 @@ build/Pentagon_artefacts/VST3/Pentagon.vst3/Contents/x86_64-linux/Pentagon.so
 
 ## Releases
 
-GitHub Actions builds and publishes the Linux VST3 bundle when a tag matching `v*` is pushed.
+GitHub Actions builds and publishes Linux, macOS, and Windows VST3 bundles when a tag matching `v*` is pushed.
 
 Example:
 
@@ -71,9 +72,9 @@ git push origin v0.1.0
 That workflow:
 
 - installs the Linux JUCE build dependencies
-- builds the `Pentagon` VST3 target
-- zips the `Pentagon.vst3` bundle
-- attaches the zip to the GitHub release for that tag
+- builds the `Pentagon` VST3 target on Ubuntu, macOS, and Windows runners
+- zips the `Pentagon.vst3` bundle on each platform
+- attaches all three zip files to the GitHub release for that tag
 
 ## Highlights
 
@@ -81,6 +82,20 @@ That workflow:
 - All saturating stages expose both a saturation mode selector and a `SAT MIX` control
 - `TUBE670` supports `LR` and `MS` stereo modes
 - Presets persist stage order alongside per-stage parameter values
+- Oversampling changes are deferred until a safe/silent block instead of hard-switching mid-audio
+- The output stage now uses slower loudness matching plus a lookahead ceiling limiter
+
+## Validation
+
+An optional JUCE smoke-test target is included:
+
+```bash
+cmake -S . -B build -DPENTAGON_BUILD_TESTS=ON
+cmake --build build --config Release --target PentagonSmokeTests
+ctest --test-dir build --output-on-failure
+```
+
+It covers chain-order roundtrips, state restore, user preset slot persistence, supported layouts, and a real audio-block pass.
 
 ## Project Layout
 

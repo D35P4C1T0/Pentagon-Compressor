@@ -1,5 +1,6 @@
 #include "PluginEditor.h"
 
+#include <limits>
 #include <vector>
 
 namespace
@@ -217,33 +218,69 @@ public:
         : processor(processorToUse),
           dryWet(processor.getValueTreeState(), "DRY/WET", pentagon::IDs::dryWet),
           output(processor.getValueTreeState(), "OUTPUT", pentagon::IDs::outputGainDb),
+          ceiling(processor.getValueTreeState(), "CEILING", pentagon::IDs::outputCeilingDb),
           autoGain(processor.getValueTreeState(), "AUTO GAIN", pentagon::IDs::autoGainEnabled),
-          safety(processor.getValueTreeState(), "SAFETY", pentagon::IDs::safetyEnabled),
+          safety(processor.getValueTreeState(), "LIMIT", pentagon::IDs::safetyEnabled),
           oversampling(processor.getValueTreeState(), "OS", pentagon::IDs::oversampling),
           tweak(processor.getValueTreeState(), "TWEAK", pentagon::IDs::tweakMode),
           inputMeter("IN"),
-          outputMeter("OUT")
+          outputMeter("OUT"),
+          matchMeter("MATCH"),
+          limitMeter("LIMIT")
     {
         addAndMakeVisible(dryWet);
         addAndMakeVisible(output);
+        addAndMakeVisible(ceiling);
         addAndMakeVisible(autoGain);
         addAndMakeVisible(safety);
         addAndMakeVisible(oversampling);
         addAndMakeVisible(tweak);
         addAndMakeVisible(inputMeter);
         addAndMakeVisible(outputMeter);
+        addAndMakeVisible(matchMeter);
+        addAndMakeVisible(limitMeter);
         addAndMakeVisible(presetLabel);
         addAndMakeVisible(presetBox);
+        addAndMakeVisible(userSlotLabel);
+        addAndMakeVisible(userSlotBox);
+        addAndMakeVisible(loadSlotButton);
+        addAndMakeVisible(saveSlotButton);
+        addAndMakeVisible(storeAButton);
+        addAndMakeVisible(recallAButton);
+        addAndMakeVisible(storeBButton);
+        addAndMakeVisible(recallBButton);
+        addAndMakeVisible(osStatusLabel);
 
         presetLabel.setText("PRESET", juce::dontSendNotification);
         presetLabel.setFont(retroFont(13.0f, true));
         presetLabel.setColour(juce::Label::textColourId, RetroPalette::text());
         styleCombo(presetBox);
 
+        userSlotLabel.setText("USER", juce::dontSendNotification);
+        userSlotLabel.setFont(retroFont(13.0f, true));
+        userSlotLabel.setColour(juce::Label::textColourId, RetroPalette::text());
+        styleCombo(userSlotBox);
+
+        osStatusLabel.setFont(retroFont(12.0f));
+        osStatusLabel.setColour(juce::Label::textColourId, RetroPalette::border());
+        osStatusLabel.setJustificationType(juce::Justification::centredLeft);
+
+        for (auto* button : { &loadSlotButton, &saveSlotButton, &storeAButton, &recallAButton, &storeBButton, &recallBButton })
+            styleButton(*button);
+
+        loadSlotButton.setButtonText("LOAD SLOT");
+        saveSlotButton.setButtonText("SAVE SLOT");
+        storeAButton.setButtonText("STORE A");
+        recallAButton.setButtonText("LOAD A");
+        storeBButton.setButtonText("STORE B");
+        recallBButton.setButtonText("LOAD B");
+
         const auto presetNames = processor.getFactoryPresetNames();
 
         for (int index = 0; index < presetNames.size(); ++index)
             presetBox.addItem(presetNames[index], index + 1);
+
+        refreshUserSlots();
 
         presetBox.onChange = [this]
         {
@@ -253,18 +290,61 @@ public:
                 processor.applyFactoryPreset(selected);
         };
 
+        loadSlotButton.onClick = [this]
+        {
+            const auto slot = userSlotBox.getSelectedId() - 1;
+
+            if (slot >= 0)
+                processor.loadUserPresetSlot(slot);
+        };
+
+        saveSlotButton.onClick = [this]
+        {
+            const auto slot = userSlotBox.getSelectedId() - 1;
+
+            if (slot >= 0)
+            {
+                processor.saveUserPresetSlot(slot);
+                refreshUserSlots();
+            }
+        };
+
+        storeAButton.onClick = [this] { processor.captureComparisonSnapshot(true); };
+        recallAButton.onClick = [this] { processor.recallComparisonSnapshot(true); };
+        storeBButton.onClick = [this] { processor.captureComparisonSnapshot(false); };
+        recallBButton.onClick = [this] { processor.recallComparisonSnapshot(false); };
+
         syncFromProcessor();
+    }
+
+    void refreshUserSlots()
+    {
+        userSlotBox.clear(juce::dontSendNotification);
+        const auto slotNames = processor.getUserPresetSlotNames();
+
+        for (int index = 0; index < slotNames.size(); ++index)
+            userSlotBox.addItem(slotNames[index], index + 1);
+
+        userSlotBox.setSelectedId(1, juce::dontSendNotification);
     }
 
     void syncFromProcessor()
     {
         // Meter repainting is timer-driven so the editor never pulls data directly from the audio thread.
-        presetBox.setSelectedId(processor.getCurrentProgramIndex() + 1, juce::dontSendNotification);
+        const auto presetIndex = processor.getCurrentProgramIndex();
+        presetBox.setSelectedId(presetIndex >= 0 ? presetIndex + 1 : 0, juce::dontSendNotification);
 
         const auto inputDb = processor.getInputMeterDb();
         const auto outputDb = processor.getOutputMeterDb();
+        const auto matchDb = processor.getAutoGainCompensationDb();
+        const auto limitDb = processor.getLimiterGainReductionDb();
         inputMeter.setValue(juce::jmap(inputDb, -60.0f, 0.0f, 0.0f, 1.0f), juce::String(inputDb, 1) + " dB");
         outputMeter.setValue(juce::jmap(outputDb, -60.0f, 0.0f, 0.0f, 1.0f), juce::String(outputDb, 1) + " dB");
+        matchMeter.setValue(juce::jmap(matchDb, -12.0f, 12.0f, 0.0f, 1.0f), juce::String(matchDb, 1) + " dB");
+        limitMeter.setValue(juce::jlimit(0.0f, 1.0f, limitDb / 12.0f), juce::String(limitDb, 1) + " dB");
+        osStatusLabel.setText(processor.getOversamplingStatusText(), juce::dontSendNotification);
+        recallAButton.setEnabled(processor.hasComparisonSnapshot(true));
+        recallBButton.setEnabled(processor.hasComparisonSnapshot(false));
     }
 
     void paint(juce::Graphics& g) override
@@ -286,16 +366,25 @@ public:
         presetLabel.setBounds(topRow.removeFromLeft(70));
         presetBox.setBounds(topRow.removeFromLeft(220));
         topRow.removeFromLeft(12);
-        inputMeter.setBounds(topRow.removeFromLeft(170));
+        userSlotLabel.setBounds(topRow.removeFromLeft(54));
+        userSlotBox.setBounds(topRow.removeFromLeft(190));
         topRow.removeFromLeft(8);
-        outputMeter.setBounds(topRow.removeFromLeft(170));
+        loadSlotButton.setBounds(topRow.removeFromLeft(92));
+        topRow.removeFromLeft(6);
+        saveSlotButton.setBounds(topRow.removeFromLeft(92));
+        topRow.removeFromLeft(8);
+        inputMeter.setBounds(topRow.removeFromLeft(150));
+        topRow.removeFromLeft(8);
+        outputMeter.setBounds(topRow.removeFromLeft(150));
 
         area.removeFromTop(8);
 
         auto firstControlRow = area.removeFromTop(30);
-        dryWet.setBounds(firstControlRow.removeFromLeft(getWidth() / 2 - 16));
+        dryWet.setBounds(firstControlRow.removeFromLeft(getWidth() / 3));
         firstControlRow.removeFromLeft(8);
-        output.setBounds(firstControlRow);
+        output.setBounds(firstControlRow.removeFromLeft(getWidth() / 3 - 10));
+        firstControlRow.removeFromLeft(8);
+        ceiling.setBounds(firstControlRow);
 
         area.removeFromTop(4);
 
@@ -307,40 +396,95 @@ public:
         oversampling.setBounds(secondControlRow.removeFromLeft(220));
         secondControlRow.removeFromLeft(8);
         tweak.setBounds(secondControlRow.removeFromLeft(220));
+
+        area.removeFromTop(6);
+
+        auto thirdControlRow = area.removeFromTop(34);
+        storeAButton.setBounds(thirdControlRow.removeFromLeft(92));
+        thirdControlRow.removeFromLeft(6);
+        recallAButton.setBounds(thirdControlRow.removeFromLeft(92));
+        thirdControlRow.removeFromLeft(12);
+        storeBButton.setBounds(thirdControlRow.removeFromLeft(92));
+        thirdControlRow.removeFromLeft(6);
+        recallBButton.setBounds(thirdControlRow.removeFromLeft(92));
+        thirdControlRow.removeFromLeft(12);
+        matchMeter.setBounds(thirdControlRow.removeFromLeft(150));
+        thirdControlRow.removeFromLeft(8);
+        limitMeter.setBounds(thirdControlRow.removeFromLeft(150));
+
+        area.removeFromTop(4);
+        osStatusLabel.setBounds(area.removeFromTop(20));
     }
 
 private:
     PentagonAudioProcessor& processor;
     SliderRow dryWet;
     SliderRow output;
+    SliderRow ceiling;
     ToggleRow autoGain;
     ToggleRow safety;
     ChoiceRow oversampling;
     ChoiceRow tweak;
     juce::Label presetLabel;
     juce::ComboBox presetBox;
+    juce::Label userSlotLabel;
+    juce::ComboBox userSlotBox;
+    juce::TextButton loadSlotButton;
+    juce::TextButton saveSlotButton;
+    juce::TextButton storeAButton;
+    juce::TextButton recallAButton;
+    juce::TextButton storeBButton;
+    juce::TextButton recallBButton;
+    juce::Label osStatusLabel;
     MeterBar inputMeter;
     MeterBar outputMeter;
+    MeterBar matchMeter;
+    MeterBar limitMeter;
 };
 
 class PentagonAudioProcessorEditor::StagePanel final : public juce::Component
 {
 public:
-    StagePanel(PentagonAudioProcessor& processorToUse, const pentagon::StageType typeToUse)
-        : processor(processorToUse),
+    StagePanel(PentagonAudioProcessorEditor& ownerToUse, PentagonAudioProcessor& processorToUse, const pentagon::StageType typeToUse)
+        : owner(ownerToUse),
+          processor(processorToUse),
           stage(typeToUse),
           grMeter("GR")
     {
         styleButton(moveLeftButton);
         styleButton(moveRightButton);
+        styleButton(collapseButton);
+        styleButton(soloButton);
+        styleButton(deltaButton);
 
         moveLeftButton.setButtonText("<");
         moveRightButton.setButtonText(">");
+        collapseButton.setButtonText("^");
+        soloButton.setButtonText("SOLO");
+        deltaButton.setButtonText("DELTA");
         moveLeftButton.onClick = [this] { processor.moveStage(stage, -1); };
         moveRightButton.onClick = [this] { processor.moveStage(stage, 1); };
+        collapseButton.onClick = [this]
+        {
+            owner.setStageCollapsed(stage, ! owner.isStageCollapsed(stage));
+            collapseButton.setButtonText(owner.isStageCollapsed(stage) ? "v" : "^");
+        };
+        soloButton.onClick = [this]
+        {
+            const auto currentMode = processor.getStageAuditionMode(stage);
+            processor.setStageAudition(stage, currentMode == pentagon::StageAuditionMode::solo ? pentagon::StageAuditionMode::off : pentagon::StageAuditionMode::solo);
+        };
+        deltaButton.onClick = [this]
+        {
+            const auto currentMode = processor.getStageAuditionMode(stage);
+            processor.setStageAudition(stage, currentMode == pentagon::StageAuditionMode::delta ? pentagon::StageAuditionMode::off : pentagon::StageAuditionMode::delta);
+        };
 
         addAndMakeVisible(moveLeftButton);
         addAndMakeVisible(moveRightButton);
+        addAndMakeVisible(collapseButton);
+        addAndMakeVisible(soloButton);
+        addAndMakeVisible(deltaButton);
         addAndMakeVisible(grMeter);
 
         buildRows();
@@ -350,6 +494,16 @@ public:
     {
         const auto grDb = processor.getStageMeterDb(stage);
         grMeter.setValue(juce::jlimit(0.0f, 1.0f, grDb / 24.0f), juce::String(grDb, 1) + " dB");
+        collapseButton.setButtonText(owner.isStageCollapsed(stage) ? "v" : "^");
+
+        const auto auditionMode = processor.getStageAuditionMode(stage);
+        soloButton.setColour(juce::TextButton::buttonColourId, auditionMode == pentagon::StageAuditionMode::solo ? RetroPalette::border().brighter(0.2f) : RetroPalette::panel());
+        deltaButton.setColour(juce::TextButton::buttonColourId, auditionMode == pentagon::StageAuditionMode::delta ? RetroPalette::border().brighter(0.2f) : RetroPalette::panel());
+
+        const auto collapsed = owner.isStageCollapsed(stage);
+
+        for (auto& row : rows)
+            row->setVisible(! collapsed);
     }
 
     void paint(juce::Graphics& g) override
@@ -369,16 +523,41 @@ public:
         auto header = area.removeFromTop(26);
         moveRightButton.setBounds(header.removeFromRight(28));
         moveLeftButton.setBounds(header.removeFromRight(28));
+        header.removeFromRight(6);
+        collapseButton.setBounds(header.removeFromRight(28));
+        header.removeFromRight(6);
+        deltaButton.setBounds(header.removeFromRight(58));
+        header.removeFromRight(6);
+        soloButton.setBounds(header.removeFromRight(52));
 
         area.removeFromTop(4);
         auto meterArea = area.removeFromBottom(40);
         grMeter.setBounds(meterArea);
+
+        if (owner.isStageCollapsed(stage))
+            return;
 
         for (auto& row : rows)
         {
             row->setBounds(area.removeFromTop(24));
             area.removeFromTop(1);
         }
+    }
+
+    void mouseDown(const juce::MouseEvent& event) override
+    {
+        dragOffset = event.getPosition();
+        owner.beginStageDrag(stage);
+    }
+
+    void mouseDrag(const juce::MouseEvent& event) override
+    {
+        owner.updateStageDrag(stage, getBounds().getPosition() + event.getPosition() - dragOffset);
+    }
+
+    void mouseUp(const juce::MouseEvent& event) override
+    {
+        owner.finishStageDrag(stage, localPointToGlobal(event.getPosition()));
     }
 
 private:
@@ -463,19 +642,24 @@ private:
         }
     }
 
+    PentagonAudioProcessorEditor& owner;
     PentagonAudioProcessor& processor;
     pentagon::StageType stage;
     juce::TextButton moveLeftButton;
     juce::TextButton moveRightButton;
+    juce::TextButton collapseButton;
+    juce::TextButton soloButton;
+    juce::TextButton deltaButton;
     MeterBar grMeter;
     std::vector<std::unique_ptr<juce::Component>> rows;
+    juce::Point<int> dragOffset;
 };
 
 PentagonAudioProcessorEditor::PentagonAudioProcessorEditor(PentagonAudioProcessor& processorToUse)
     : AudioProcessorEditor(&processorToUse),
-      processor(processorToUse),
+      pluginProcessor(processorToUse),
       globalPanel(std::make_unique<GlobalPanel>(processorToUse)),
-      lastOrderPacked(processor.getPackedChainOrder())
+      lastOrderPacked(pluginProcessor.getPackedChainOrder())
 {
     setOpaque(true);
     addAndMakeVisible(*globalPanel);
@@ -490,13 +674,13 @@ PentagonAudioProcessorEditor::PentagonAudioProcessorEditor(PentagonAudioProcesso
 
     for (int index = 0; index < pentagon::numStages; ++index)
     {
-        stagePanels[static_cast<size_t> (index)] = std::make_unique<StagePanel>(processor, types[static_cast<size_t> (index)]);
+        stagePanels[static_cast<size_t> (index)] = std::make_unique<StagePanel>(*this, pluginProcessor, types[static_cast<size_t> (index)]);
         addAndMakeVisible(*stagePanels[static_cast<size_t> (index)]);
     }
 
     setResizable(true, true);
-    setResizeLimits(980, 760, 1760, 1200);
-    setSize(1280, 900);
+    setResizeLimits(980, 820, 1760, 1280);
+    setSize(1360, 980);
 
     startTimerHz(30);
 }
@@ -529,10 +713,10 @@ void PentagonAudioProcessorEditor::resized()
     auto area = getLocalBounds().reduced(16);
     area.removeFromTop(58);
 
-    globalPanel->setBounds(area.removeFromTop(146));
+    globalPanel->setBounds(area.removeFromTop(200));
     area.removeFromTop(14);
 
-    const auto orderedStages = processor.getChainOrder();
+    const auto orderedStages = pluginProcessor.getChainOrder();
     constexpr int columns = 3;
     const auto rowHeight = (area.getHeight() - 12) / 2;
     const auto columnWidth = (area.getWidth() - 16) / columns;
@@ -547,8 +731,11 @@ void PentagonAudioProcessorEditor::resized()
             columnWidth,
             rowHeight);
 
+        stageSlotBounds[static_cast<size_t> (index)] = bounds;
+
         const auto stageType = orderedStages[static_cast<size_t> (index)];
-        stagePanels[static_cast<size_t> (pentagon::toIndex(stageType))]->setBounds(bounds);
+        if (! isDraggingStage || draggingStage != stageType)
+            stagePanels[static_cast<size_t> (pentagon::toIndex(stageType))]->setBounds(bounds);
     }
 }
 
@@ -562,7 +749,7 @@ void PentagonAudioProcessorEditor::timerCallback()
             panel->syncFromProcessor();
     }
 
-    const auto packedOrder = processor.getPackedChainOrder();
+    const auto packedOrder = pluginProcessor.getPackedChainOrder();
 
     if (packedOrder != lastOrderPacked)
     {
@@ -570,4 +757,59 @@ void PentagonAudioProcessorEditor::timerCallback()
         resized();
         repaint();
     }
+}
+
+void PentagonAudioProcessorEditor::setStageCollapsed(const pentagon::StageType stage, const bool collapsed)
+{
+    collapsedStages[static_cast<size_t> (pentagon::toIndex(stage))] = collapsed;
+    resized();
+    repaint();
+}
+
+bool PentagonAudioProcessorEditor::isStageCollapsed(const pentagon::StageType stage) const noexcept
+{
+    return collapsedStages[static_cast<size_t> (pentagon::toIndex(stage))];
+}
+
+void PentagonAudioProcessorEditor::beginStageDrag(const pentagon::StageType stage)
+{
+    draggingStage = stage;
+    isDraggingStage = true;
+    if (auto* panel = stagePanels[static_cast<size_t> (pentagon::toIndex(stage))].get())
+        panel->toFront(false);
+}
+
+void PentagonAudioProcessorEditor::updateStageDrag(const pentagon::StageType stage, const juce::Point<int> topLeft)
+{
+    if (! isDraggingStage || draggingStage != stage)
+        return;
+
+    if (auto* panel = stagePanels[static_cast<size_t> (pentagon::toIndex(stage))].get())
+        panel->setTopLeftPosition(topLeft);
+}
+
+void PentagonAudioProcessorEditor::finishStageDrag(const pentagon::StageType stage, const juce::Point<int> dropPoint)
+{
+    if (! isDraggingStage || draggingStage != stage)
+        return;
+
+    isDraggingStage = false;
+    const auto localDropPoint = getLocalPoint(nullptr, dropPoint);
+    auto bestIndex = 0;
+    auto bestDistance = std::numeric_limits<int>::max();
+
+    for (int index = 0; index < pentagon::numStages; ++index)
+    {
+        const auto distance = stageSlotBounds[static_cast<size_t> (index)].getCentre().getDistanceFrom(localDropPoint);
+
+        if (distance < bestDistance)
+        {
+            bestDistance = distance;
+            bestIndex = index;
+        }
+    }
+
+    pluginProcessor.moveStageToIndex(stage, bestIndex);
+    resized();
+    repaint();
 }
