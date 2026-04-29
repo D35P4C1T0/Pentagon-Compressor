@@ -121,4 +121,45 @@ if (PENTAGON_BUILD_TESTS)
     )
 
     add_test(NAME PentagonSmokeTests COMMAND PentagonSmokeTests)
+
+    juce_add_console_app(PentagonUIScreenshot
+        PRODUCT_NAME "PentagonUIScreenshot"
+    )
+
+    target_sources(PentagonUIScreenshot
+        PRIVATE
+            Tests/PentagonUIScreenshot.cpp
+            Source/ParameterIds.h
+            Source/StageProcessors.h
+            Source/DSP/StageCommon.h
+            Source/DSP/Fet76Stage.h
+            Source/DSP/Opto2AStage.h
+            Source/DSP/Vca160Stage.h
+            Source/DSP/VariMuStage.h
+            Source/DSP/Tube670Stage.h
+            Source/DSP/StageChainManager.h
+            Source/PluginProcessor.h
+            Source/PluginProcessor.cpp
+            Source/PluginEditor.h
+            Source/PluginEditor.cpp
+    )
+
+    target_compile_definitions(PentagonUIScreenshot
+        PRIVATE
+            JUCE_WEB_BROWSER=0
+            JUCE_USE_CURL=0
+            JUCE_VST3_CAN_REPLACE_VST2=0
+    )
+
+    target_link_libraries(PentagonUIScreenshot
+        PRIVATE
+            juce::juce_audio_processors
+            juce::juce_audio_utils
+            juce::juce_dsp
+            juce::juce_gui_extra
+        PUBLIC
+            juce::juce_recommended_config_flags
+            juce::juce_recommended_lto_flags
+            juce::juce_recommended_warning_flags
+    )
 endif()

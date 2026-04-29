@@ -1,6 +1,6 @@
 # Pentagon
 
-<img width="1257" height="881" alt="image" src="https://github.com/user-attachments/assets/a259db19-bac5-4feb-a12c-5faec4e2e44a" />
+![Pentagon plugin UI](docs/pentagon-ui.png)
 
 ---
 
