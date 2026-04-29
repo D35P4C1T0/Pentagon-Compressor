@@ -44,6 +44,13 @@ target_sources(Pentagon
     PRIVATE
         Source/ParameterIds.h
         Source/StageProcessors.h
+        Source/DSP/StageCommon.h
+        Source/DSP/Fet76Stage.h
+        Source/DSP/Opto2AStage.h
+        Source/DSP/Vca160Stage.h
+        Source/DSP/VariMuStage.h
+        Source/DSP/Tube670Stage.h
+        Source/DSP/StageChainManager.h
         Source/PluginProcessor.h
         Source/PluginProcessor.cpp
         Source/PluginEditor.h
@@ -81,6 +88,13 @@ if (PENTAGON_BUILD_TESTS)
             Tests/PentagonSmokeTests.cpp
             Source/ParameterIds.h
             Source/StageProcessors.h
+            Source/DSP/StageCommon.h
+            Source/DSP/Fet76Stage.h
+            Source/DSP/Opto2AStage.h
+            Source/DSP/Vca160Stage.h
+            Source/DSP/VariMuStage.h
+            Source/DSP/Tube670Stage.h
+            Source/DSP/StageChainManager.h
             Source/PluginProcessor.h
             Source/PluginProcessor.cpp
             Source/PluginEditor.h

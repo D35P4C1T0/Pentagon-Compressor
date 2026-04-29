@@ -88,6 +88,20 @@ int main()
 
     expect(restored.getLatencySamples() >= 32, "reported latency should include finishing lookahead");
     expect(readParamPlainValue(stateTree, IDs::outputCeilingDb) <= 0.0f, "ceiling parameter should exist and be readable");
+    expect(readParamPlainValue(stateTree, IDs::routingMode) >= 0.0f, "routing parameter should exist and be readable");
+    expect(readParamPlainValue(stateTree, IDs::fetMix) == 100.0f, "stage mix should default wet");
+    expect(readParamPlainValue(stateTree, IDs::tubeSaturationPlacement) == 0.0f, "saturation placement should default post");
+
+    stateTree.getParameter(IDs::routingMode)->setValueNotifyingHost(stateTree.getParameter(IDs::routingMode)->convertTo0to1(1.0f));
+    restored.processBlock(audio, midi);
+
+    for (int channel = 0; channel < audio.getNumChannels(); ++channel)
+    {
+        const auto* samples = audio.getReadPointer(channel);
+
+        for (int sample = 0; sample < audio.getNumSamples(); ++sample)
+            expect(std::isfinite(samples[sample]), "parallel routing samples must remain finite");
+    }
 
     std::cout << "Pentagon smoke tests passed\n";
     return 0;

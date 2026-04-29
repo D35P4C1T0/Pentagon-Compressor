@@ -49,6 +49,20 @@ enum class StageAuditionMode : int
     delta
 };
 
+enum class RoutingMode : int
+{
+    serial = 0,
+    parallel,
+    hybrid
+};
+
+enum class SaturationPlacement : int
+{
+    post = 0,
+    pre,
+    both
+};
+
 struct MacroTuning
 {
     float thresholdOffsetDb {};
@@ -142,8 +156,11 @@ namespace IDs
     inline constexpr auto safetyEnabled = "global.safetyEnabled";
     inline constexpr auto oversampling = "global.oversampling";
     inline constexpr auto tweakMode = "global.tweakMode";
+    inline constexpr auto routingMode = "global.routingMode";
 
     inline constexpr auto fetEnabled = "fet.enabled";
+    inline constexpr auto fetMix = "fet.mix";
+    inline constexpr auto fetSidechainHpf = "fet.sidechainHpfHz";
     inline constexpr auto fetInput = "fet.inputGainDb";
     inline constexpr auto fetOutput = "fet.outputGainDb";
     inline constexpr auto fetAttackUs = "fet.attackUs";
@@ -152,36 +169,49 @@ namespace IDs
     inline constexpr auto fetRatio = "fet.ratio";
     inline constexpr auto fetSaturation = "fet.saturationMode";
     inline constexpr auto fetSaturationMix = "fet.saturationMix";
+    inline constexpr auto fetSaturationPlacement = "fet.saturationPlacement";
 
     inline constexpr auto optoEnabled = "opto.enabled";
+    inline constexpr auto optoMix = "opto.mix";
+    inline constexpr auto optoSidechainHpf = "opto.sidechainHpfHz";
     inline constexpr auto optoPeakReduction = "opto.peakReduction";
     inline constexpr auto optoMode = "opto.mode";
     inline constexpr auto optoMakeupDb = "opto.makeupGainDb";
     inline constexpr auto optoHfEmphasis = "opto.hfEmphasis";
     inline constexpr auto optoSaturation = "opto.saturationMode";
     inline constexpr auto optoSaturationMix = "opto.saturationMix";
+    inline constexpr auto optoSaturationPlacement = "opto.saturationPlacement";
 
     inline constexpr auto vcaEnabled = "vca.enabled";
+    inline constexpr auto vcaMix = "vca.mix";
+    inline constexpr auto vcaSidechainHpf = "vca.sidechainHpfHz";
     inline constexpr auto vcaThresholdDb = "vca.thresholdDb";
     inline constexpr auto vcaOvereasy = "vca.overeasy";
     inline constexpr auto vcaMakeupDb = "vca.makeupGainDb";
     inline constexpr auto vcaSaturation = "vca.saturationMode";
     inline constexpr auto vcaSaturationMix = "vca.saturationMix";
+    inline constexpr auto vcaSaturationPlacement = "vca.saturationPlacement";
 
     inline constexpr auto variEnabled = "varimu.enabled";
+    inline constexpr auto variMix = "varimu.mix";
+    inline constexpr auto variSidechainHpf = "varimu.sidechainHpfHz";
     inline constexpr auto variThresholdDb = "varimu.thresholdDb";
     inline constexpr auto variAttackMs = "varimu.attackMs";
     inline constexpr auto variRecovery = "varimu.recovery";
     inline constexpr auto variMakeupDb = "varimu.makeupGainDb";
     inline constexpr auto variSaturation = "varimu.saturationMode";
     inline constexpr auto variSaturationMix = "varimu.saturationMix";
+    inline constexpr auto variSaturationPlacement = "varimu.saturationPlacement";
 
     inline constexpr auto tubeEnabled = "tube670.enabled";
+    inline constexpr auto tubeMix = "tube670.mix";
+    inline constexpr auto tubeSidechainHpf = "tube670.sidechainHpfHz";
     inline constexpr auto tubeThresholdDb = "tube670.thresholdDb";
     inline constexpr auto tubeTimeConstant = "tube670.timeConstant";
     inline constexpr auto tubeMode = "tube670.mode";
     inline constexpr auto tubeMakeupDb = "tube670.makeupGainDb";
     inline constexpr auto tubeSaturation = "tube670.saturationMode";
     inline constexpr auto tubeSaturationMix = "tube670.saturationMix";
+    inline constexpr auto tubeSaturationPlacement = "tube670.saturationPlacement";
 }
 } // namespace pentagon

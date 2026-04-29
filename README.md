@@ -8,8 +8,9 @@
 
 Implemented features:
 
-- Five serial compressor stages: `FET76`, `OPTO2A`, `VCA160`, `VARIMU`, `TUBE670`
-- Per-stage enable, parameter controls, saturation mode, and GR meter
+- Five compressor stages: `FET76`, `OPTO2A`, `VCA160`, `VARIMU`, `TUBE670`
+- Serial, parallel, and hybrid stage routing
+- Per-stage enable, mix, sidechain HPF, parameter controls, saturation mode/placement, and GR meter
 - Reorderable chain with persistent stage order
 - Global `Dry/Wet`, `Output`, `Ceiling`, lookahead limit, deferred oversampling switching, `Tweak`, and preset controls
 - Input/output metering

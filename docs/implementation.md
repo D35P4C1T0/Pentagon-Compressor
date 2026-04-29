@@ -12,6 +12,12 @@ The plugin is split into three main layers:
 
 The stage order is stored as a packed `uint32_t` permutation and mirrored into plugin state. The audio thread reads the packed order atomically at block boundaries, so UI reorder operations do not require locks.
 
+The chain can run in three routing modes:
+
+- `Serial`: each stage feeds the next stage in the current order
+- `Parallel`: every stage receives the same input and the five outputs are summed at unity-safe weighting
+- `Hybrid`: the first two ordered stages run as parallel lanes, then the result feeds the remaining stages serially
+
 ## DSP Model
 
 Each stage is a distinct v1 behavior model rather than a strict hardware emulation:
@@ -22,7 +28,7 @@ Each stage is a distinct v1 behavior model rather than a strict hardware emulati
 - `VARIMU`: slower RMS glue compressor with stepped recovery behavior
 - `TUBE670`: stepped timing compressor with thicker saturation voicing
 
-Continuous controls use smoothing, stage bypass transitions are mixed through a short smoothed enable amount to avoid hard discontinuities, and each stage now has a more distinct detector/saturation voicing.
+Continuous controls use smoothing, stage bypass transitions are mixed through a short smoothed enable amount to avoid hard discontinuities, and each stage now has a more distinct detector/saturation voicing. Each stage also has its own wet mix, sidechain high-pass filter, and saturation placement selector (`Post`, `Pre`, `Both`).
 
 ## Oversampling and Dry Path
 

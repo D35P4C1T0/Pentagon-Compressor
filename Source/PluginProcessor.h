@@ -122,6 +122,7 @@ private:
     std::atomic<float>* safetyEnabledParam {};
     std::atomic<float>* oversamplingParam {};
     std::atomic<float>* tweakModeParam {};
+    std::atomic<float>* routingModeParam {};
 
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> dryWetSmoother;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> outputGainDbSmoother;

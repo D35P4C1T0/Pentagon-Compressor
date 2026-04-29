@@ -70,6 +70,7 @@ PentagonAudioProcessor::PentagonAudioProcessor()
     safetyEnabledParam = parameters.getRawParameterValue(IDs::safetyEnabled);
     oversamplingParam = parameters.getRawParameterValue(IDs::oversampling);
     tweakModeParam = parameters.getRawParameterValue(IDs::tweakMode);
+    routingModeParam = parameters.getRawParameterValue(IDs::routingMode);
 
     for (auto& meter : stageMeterDb)
         meter.store(0.0f);
@@ -94,8 +95,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout PentagonAudioProcessor::crea
     params.push_back(makeParameter<Bool>(IDs::safetyEnabled, "Safety", true));
     params.push_back(makeParameter<Choice>(IDs::oversampling, "Oversampling", juce::StringArray { "1x", "2x", "4x" }, 0));
     params.push_back(makeParameter<Choice>(IDs::tweakMode, "Tweak", juce::StringArray { "Clean", "Balanced", "Aggressive", "Glue", "Vocal", "Loud" }, 2));
+    params.push_back(makeParameter<Choice>(IDs::routingMode, "Routing", juce::StringArray { "Serial", "Parallel", "Hybrid" }, 0));
 
     params.push_back(makeParameter<Bool>(IDs::fetEnabled, "FET76 On", false));
+    params.push_back(makeParameter<Float>(IDs::fetMix, "FET76 Mix", juce::NormalisableRange<float>(0.0f, 100.0f, 0.01f), 100.0f));
+    params.push_back(makeParameter<Float>(IDs::fetSidechainHpf, "FET76 SC HPF", juce::NormalisableRange<float>(20.0f, 400.0f, 0.01f, 0.35f), 20.0f));
     params.push_back(makeParameter<Float>(IDs::fetInput, "FET76 Input", juce::NormalisableRange<float>(-24.0f, 24.0f, 0.01f), 0.0f));
     params.push_back(makeParameter<Float>(IDs::fetOutput, "FET76 Output", juce::NormalisableRange<float>(-24.0f, 24.0f, 0.01f), 0.0f));
     params.push_back(makeParameter<Float>(IDs::fetAttackUs, "FET76 Attack (us)", juce::NormalisableRange<float>(20.0f, 800.0f, 1.0f, 0.35f), 120.0f));
@@ -104,37 +108,50 @@ juce::AudioProcessorValueTreeState::ParameterLayout PentagonAudioProcessor::crea
     params.push_back(makeParameter<Choice>(IDs::fetRatio, "FET76 Ratio", makeFetRatioChoices(), 0));
     params.push_back(makeParameter<Choice>(IDs::fetSaturation, "FET76 Sat", makeSaturationChoices({ "Off", "Clean", "Warm", "Drive" }), 1));
     params.push_back(makeParameter<Float>(IDs::fetSaturationMix, "FET76 Sat Mix", juce::NormalisableRange<float>(0.0f, 100.0f, 0.01f), 100.0f));
+    params.push_back(makeParameter<Choice>(IDs::fetSaturationPlacement, "FET76 Sat Pos", juce::StringArray { "Post", "Pre", "Both" }, 0));
 
     params.push_back(makeParameter<Bool>(IDs::optoEnabled, "OPTO2A On", true));
+    params.push_back(makeParameter<Float>(IDs::optoMix, "OPTO2A Mix", juce::NormalisableRange<float>(0.0f, 100.0f, 0.01f), 100.0f));
+    params.push_back(makeParameter<Float>(IDs::optoSidechainHpf, "OPTO2A SC HPF", juce::NormalisableRange<float>(20.0f, 400.0f, 0.01f, 0.35f), 20.0f));
     params.push_back(makeParameter<Float>(IDs::optoPeakReduction, "OPTO2A Peak Red", juce::NormalisableRange<float>(0.0f, 100.0f, 0.01f), 71.5f));
     params.push_back(makeParameter<Choice>(IDs::optoMode, "OPTO2A Mode", juce::StringArray { "COMP", "LIMIT" }, 0));
     params.push_back(makeParameter<Float>(IDs::optoMakeupDb, "OPTO2A Makeup", juce::NormalisableRange<float>(-12.0f, 24.0f, 0.01f), 0.0f));
     params.push_back(makeParameter<Float>(IDs::optoHfEmphasis, "OPTO2A HF Emp", juce::NormalisableRange<float>(0.0f, 100.0f, 0.01f), 0.0f));
     params.push_back(makeParameter<Choice>(IDs::optoSaturation, "OPTO2A Sat", makeSaturationChoices({ "Off", "Clean", "Warm", "Tube" }), 1));
     params.push_back(makeParameter<Float>(IDs::optoSaturationMix, "OPTO2A Sat Mix", juce::NormalisableRange<float>(0.0f, 100.0f, 0.01f), 100.0f));
+    params.push_back(makeParameter<Choice>(IDs::optoSaturationPlacement, "OPTO2A Sat Pos", juce::StringArray { "Post", "Pre", "Both" }, 0));
 
     params.push_back(makeParameter<Bool>(IDs::vcaEnabled, "VCA160 On", true));
+    params.push_back(makeParameter<Float>(IDs::vcaMix, "VCA160 Mix", juce::NormalisableRange<float>(0.0f, 100.0f, 0.01f), 100.0f));
+    params.push_back(makeParameter<Float>(IDs::vcaSidechainHpf, "VCA160 SC HPF", juce::NormalisableRange<float>(20.0f, 400.0f, 0.01f, 0.35f), 20.0f));
     params.push_back(makeParameter<Float>(IDs::vcaThresholdDb, "VCA160 Threshold", juce::NormalisableRange<float>(-60.0f, 0.0f, 0.01f), -28.6f));
     params.push_back(makeParameter<Bool>(IDs::vcaOvereasy, "VCA160 Overeasy", true));
     params.push_back(makeParameter<Float>(IDs::vcaMakeupDb, "VCA160 Makeup", juce::NormalisableRange<float>(-24.0f, 24.0f, 0.01f), 0.0f));
     params.push_back(makeParameter<Choice>(IDs::vcaSaturation, "VCA160 Sat", makeSaturationChoices({ "Off", "Clean", "Punch", "Warm" }), 1));
     params.push_back(makeParameter<Float>(IDs::vcaSaturationMix, "VCA160 Sat Mix", juce::NormalisableRange<float>(0.0f, 100.0f, 0.01f), 100.0f));
+    params.push_back(makeParameter<Choice>(IDs::vcaSaturationPlacement, "VCA160 Sat Pos", juce::StringArray { "Post", "Pre", "Both" }, 0));
 
     params.push_back(makeParameter<Bool>(IDs::variEnabled, "VARIMU On", false));
+    params.push_back(makeParameter<Float>(IDs::variMix, "VARIMU Mix", juce::NormalisableRange<float>(0.0f, 100.0f, 0.01f), 100.0f));
+    params.push_back(makeParameter<Float>(IDs::variSidechainHpf, "VARIMU SC HPF", juce::NormalisableRange<float>(20.0f, 400.0f, 0.01f, 0.35f), 20.0f));
     params.push_back(makeParameter<Float>(IDs::variThresholdDb, "VARIMU Threshold", juce::NormalisableRange<float>(-60.0f, 0.0f, 0.01f), -22.0f));
     params.push_back(makeParameter<Float>(IDs::variAttackMs, "VARIMU Attack (ms)", juce::NormalisableRange<float>(0.1f, 100.0f, 0.01f, 0.3f), 45.0f));
     params.push_back(makeParameter<Choice>(IDs::variRecovery, "VARIMU Recovery", juce::StringArray { "Fast", "0.4s", "Slow", "Auto" }, 1));
     params.push_back(makeParameter<Float>(IDs::variMakeupDb, "VARIMU Makeup", juce::NormalisableRange<float>(-24.0f, 24.0f, 0.01f), 0.0f));
     params.push_back(makeParameter<Choice>(IDs::variSaturation, "VARIMU Sat", makeSaturationChoices({ "Off", "Clean", "Warm", "Thick" }), 1));
     params.push_back(makeParameter<Float>(IDs::variSaturationMix, "VARIMU Sat Mix", juce::NormalisableRange<float>(0.0f, 100.0f, 0.01f), 100.0f));
+    params.push_back(makeParameter<Choice>(IDs::variSaturationPlacement, "VARIMU Sat Pos", juce::StringArray { "Post", "Pre", "Both" }, 0));
 
     params.push_back(makeParameter<Bool>(IDs::tubeEnabled, "TUBE670 On", false));
+    params.push_back(makeParameter<Float>(IDs::tubeMix, "TUBE670 Mix", juce::NormalisableRange<float>(0.0f, 100.0f, 0.01f), 100.0f));
+    params.push_back(makeParameter<Float>(IDs::tubeSidechainHpf, "TUBE670 SC HPF", juce::NormalisableRange<float>(20.0f, 400.0f, 0.01f, 0.35f), 20.0f));
     params.push_back(makeParameter<Float>(IDs::tubeThresholdDb, "TUBE670 Threshold", juce::NormalisableRange<float>(-60.0f, 0.0f, 0.01f), -18.0f));
     params.push_back(makeParameter<Choice>(IDs::tubeTimeConstant, "TUBE670 Time Const", juce::StringArray { "1", "2", "3", "4", "5", "6" }, 1));
     params.push_back(makeParameter<Choice>(IDs::tubeMode, "TUBE670 Mode", juce::StringArray { "LR", "MS" }, 0));
     params.push_back(makeParameter<Float>(IDs::tubeMakeupDb, "TUBE670 Makeup", juce::NormalisableRange<float>(-24.0f, 24.0f, 0.01f), 0.0f));
     params.push_back(makeParameter<Choice>(IDs::tubeSaturation, "TUBE670 Sat", makeSaturationChoices({ "Off", "Clean", "Tube", "Heavy" }), 1));
     params.push_back(makeParameter<Float>(IDs::tubeSaturationMix, "TUBE670 Sat Mix", juce::NormalisableRange<float>(0.0f, 100.0f, 0.01f), 100.0f));
+    params.push_back(makeParameter<Choice>(IDs::tubeSaturationPlacement, "TUBE670 Sat Pos", juce::StringArray { "Post", "Pre", "Both" }, 0));
 
     return { params.begin(), params.end() };
 }
@@ -517,20 +534,20 @@ void PentagonAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
     if (oversamplingFactor == 1)
     {
         juce::dsp::AudioBlock<float> block(buffer);
-        stageChain.process(block, orderPacked, tweakMode, currentSampleRate, auditionStage, auditionMode);
+        stageChain.process(block, orderPacked, tweakMode, static_cast<int> (routingModeParam->load()), currentSampleRate, auditionStage, auditionMode);
     }
     else if (oversamplingFactor == 2 && oversampling2x != nullptr)
     {
         juce::dsp::AudioBlock<float> block(buffer);
         auto oversampledBlock = oversampling2x->processSamplesUp(block);
-        stageChain.process(oversampledBlock, orderPacked, tweakMode, currentSampleRate * 2.0, auditionStage, auditionMode);
+        stageChain.process(oversampledBlock, orderPacked, tweakMode, static_cast<int> (routingModeParam->load()), currentSampleRate * 2.0, auditionStage, auditionMode);
         oversampling2x->processSamplesDown(block);
     }
     else if (oversampling4x != nullptr)
     {
         juce::dsp::AudioBlock<float> block(buffer);
         auto oversampledBlock = oversampling4x->processSamplesUp(block);
-        stageChain.process(oversampledBlock, orderPacked, tweakMode, currentSampleRate * 4.0, auditionStage, auditionMode);
+        stageChain.process(oversampledBlock, orderPacked, tweakMode, static_cast<int> (routingModeParam->load()), currentSampleRate * 4.0, auditionStage, auditionMode);
         oversampling4x->processSamplesDown(block);
     }
 

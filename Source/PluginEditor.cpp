@@ -5,6 +5,12 @@
 
 namespace
 {
+constexpr auto editorScale = 0.7f;
+constexpr int editorLogicalWidth = 1360;
+constexpr int editorLogicalHeight = 980;
+constexpr int editorScaledWidth = static_cast<int> (editorLogicalWidth * editorScale);
+constexpr int editorScaledHeight = static_cast<int> (editorLogicalHeight * editorScale);
+
 using APVTS = juce::AudioProcessorValueTreeState;
 using SliderAttachment = APVTS::SliderAttachment;
 using ButtonAttachment = APVTS::ButtonAttachment;
@@ -223,6 +229,7 @@ public:
           safety(processor.getValueTreeState(), "LIMIT", pentagon::IDs::safetyEnabled),
           oversampling(processor.getValueTreeState(), "OS", pentagon::IDs::oversampling),
           tweak(processor.getValueTreeState(), "TWEAK", pentagon::IDs::tweakMode),
+          routing(processor.getValueTreeState(), "ROUTE", pentagon::IDs::routingMode),
           inputMeter("IN"),
           outputMeter("OUT"),
           matchMeter("MATCH"),
@@ -235,6 +242,7 @@ public:
         addAndMakeVisible(safety);
         addAndMakeVisible(oversampling);
         addAndMakeVisible(tweak);
+        addAndMakeVisible(routing);
         addAndMakeVisible(inputMeter);
         addAndMakeVisible(outputMeter);
         addAndMakeVisible(matchMeter);
@@ -395,7 +403,9 @@ public:
         secondControlRow.removeFromLeft(8);
         oversampling.setBounds(secondControlRow.removeFromLeft(220));
         secondControlRow.removeFromLeft(8);
-        tweak.setBounds(secondControlRow.removeFromLeft(220));
+        tweak.setBounds(secondControlRow.removeFromLeft(190));
+        secondControlRow.removeFromLeft(8);
+        routing.setBounds(secondControlRow.removeFromLeft(190));
 
         area.removeFromTop(6);
 
@@ -425,6 +435,7 @@ private:
     ToggleRow safety;
     ChoiceRow oversampling;
     ChoiceRow tweak;
+    ChoiceRow routing;
     juce::Label presetLabel;
     juce::ComboBox presetBox;
     juce::Label userSlotLabel;
@@ -591,6 +602,8 @@ private:
         {
             case StageType::fet76:
                 addToggle("ON", IDs::fetEnabled);
+                addSlider("MIX", IDs::fetMix);
+                addSlider("SC HPF", IDs::fetSidechainHpf);
                 addSlider("INPUT", IDs::fetInput);
                 addSlider("OUTPUT", IDs::fetOutput);
                 addSlider("ATTACK", IDs::fetAttackUs);
@@ -599,45 +612,58 @@ private:
                 addChoice("RATIO", IDs::fetRatio);
                 addChoice("SAT", IDs::fetSaturation);
                 addSlider("SAT MIX", IDs::fetSaturationMix);
+                addChoice("SAT POS", IDs::fetSaturationPlacement);
                 break;
 
             case StageType::opto2a:
                 addToggle("ON", IDs::optoEnabled);
+                addSlider("MIX", IDs::optoMix);
+                addSlider("SC HPF", IDs::optoSidechainHpf);
                 addSlider("PEAK RED", IDs::optoPeakReduction);
                 addChoice("MODE", IDs::optoMode);
                 addSlider("MAKEUP", IDs::optoMakeupDb);
                 addSlider("HF EMP", IDs::optoHfEmphasis);
                 addChoice("SAT", IDs::optoSaturation);
                 addSlider("SAT MIX", IDs::optoSaturationMix);
+                addChoice("SAT POS", IDs::optoSaturationPlacement);
                 break;
 
             case StageType::vca160:
                 addToggle("ON", IDs::vcaEnabled);
+                addSlider("MIX", IDs::vcaMix);
+                addSlider("SC HPF", IDs::vcaSidechainHpf);
                 addSlider("THRESH", IDs::vcaThresholdDb);
                 addToggle("OVEREASY", IDs::vcaOvereasy);
                 addSlider("MAKEUP", IDs::vcaMakeupDb);
                 addChoice("SAT", IDs::vcaSaturation);
                 addSlider("SAT MIX", IDs::vcaSaturationMix);
+                addChoice("SAT POS", IDs::vcaSaturationPlacement);
                 break;
 
             case StageType::variMu:
                 addToggle("ON", IDs::variEnabled);
+                addSlider("MIX", IDs::variMix);
+                addSlider("SC HPF", IDs::variSidechainHpf);
                 addSlider("THRESH", IDs::variThresholdDb);
                 addSlider("ATTACK", IDs::variAttackMs);
                 addChoice("RECOVER", IDs::variRecovery);
                 addSlider("MAKEUP", IDs::variMakeupDb);
                 addChoice("SAT", IDs::variSaturation);
                 addSlider("SAT MIX", IDs::variSaturationMix);
+                addChoice("SAT POS", IDs::variSaturationPlacement);
                 break;
 
             case StageType::tube670:
                 addToggle("ON", IDs::tubeEnabled);
+                addSlider("MIX", IDs::tubeMix);
+                addSlider("SC HPF", IDs::tubeSidechainHpf);
                 addSlider("THRESH", IDs::tubeThresholdDb);
                 addChoice("TIME", IDs::tubeTimeConstant);
                 addChoice("MODE", IDs::tubeMode);
                 addSlider("MAKEUP", IDs::tubeMakeupDb);
                 addChoice("SAT", IDs::tubeSaturation);
                 addSlider("SAT MIX", IDs::tubeSaturationMix);
+                addChoice("SAT POS", IDs::tubeSaturationPlacement);
                 break;
         }
     }
@@ -679,8 +705,8 @@ PentagonAudioProcessorEditor::PentagonAudioProcessorEditor(PentagonAudioProcesso
     }
 
     setResizable(true, true);
-    setResizeLimits(980, 820, 1760, 1280);
-    setSize(1360, 980);
+    setResizeLimits(editorScaledWidth, editorScaledHeight, editorLogicalWidth, editorLogicalHeight);
+    setSize(editorScaledWidth, editorScaledHeight);
 
     startTimerHz(30);
 }
@@ -689,6 +715,7 @@ PentagonAudioProcessorEditor::~PentagonAudioProcessorEditor() = default;
 
 void PentagonAudioProcessorEditor::paint(juce::Graphics& g)
 {
+    g.addTransform(juce::AffineTransform::scale(editorScale));
     g.fillAll(RetroPalette::background());
 
     g.setColour(RetroPalette::text());
@@ -696,7 +723,7 @@ void PentagonAudioProcessorEditor::paint(juce::Graphics& g)
     g.drawText("Pentagon", 20, 10, 220, 28, juce::Justification::centredLeft);
 
     g.setFont(retroFont(13.0f));
-    g.drawText("five-stage serial compressor | reorderable chain | VST3", 20, 38, getWidth() - 40, 18, juce::Justification::centredLeft);
+    g.drawText("five-stage serial compressor | reorderable chain | VST3", 20, 38, editorLogicalWidth - 40, 18, juce::Justification::centredLeft);
 }
 
 void PentagonAudioProcessorEditor::resized()
@@ -710,7 +737,17 @@ void PentagonAudioProcessorEditor::resized()
             return;
     }
 
-    auto area = getLocalBounds().reduced(16);
+    const auto currentScale = static_cast<float> (getWidth()) / static_cast<float> (editorLogicalWidth);
+    const auto transform = juce::AffineTransform::scale(currentScale);
+
+    if (globalPanel != nullptr)
+        globalPanel->setTransform(transform);
+
+    for (const auto& panel : stagePanels)
+        if (panel != nullptr)
+            panel->setTransform(transform);
+
+    auto area = juce::Rectangle<int>(0, 0, editorLogicalWidth, editorLogicalHeight).reduced(16);
     area.removeFromTop(58);
 
     globalPanel->setBounds(area.removeFromTop(200));
